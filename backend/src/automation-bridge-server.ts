@@ -1,68 +1,6 @@
 
-
-/**
- * LOGGING SYSTEM V5.3.6
- * - Rastreia todas as operações com timestamps
- * - Mostra etapas do fluxo de automação
- * - Facilita debugging de erros
- */
-
-// Cache global: rastreia qual modelo funcionou melhor
-const modelSuccessCache: Record<string, {attempts: number; successes: number; lastSuccess: Date}> = {};
-
-function recordModelAttempt(model: string, success: boolean) {
-  if (!modelSuccessCache[model]) {
-    modelSuccessCache[model] = { attempts: 0, successes: 0, lastSuccess: new Date() };
-  }
-  modelSuccessCache[model].attempts++;
-  if (success) {
-    modelSuccessCache[model].successes++;
-    modelSuccessCache[model].lastSuccess = new Date();
-  }
-}
-
-function getBestModel(): string {
-  let best = 'Nano Banana 2';
-  let bestScore = -1;
-  
-  for (const [model, data] of Object.entries(modelSuccessCache)) {
-    const score = data.successes / Math.max(1, data.attempts);
-    if (score > bestScore) {
-      best = model;
-      bestScore = score;
-    }
-  }
-  
-  return best;
-}
-
 import express from 'express';
 import cors from 'cors';
-
-// Retry automático com backoff exponencial
-async function retryWithBackoff(
-  fn: () => Promise<any>,
-  maxAttempts: number = 3,
-  baseDelay: number = 800
-): Promise<{result: any; attempts: number; success: boolean}> {
-  let lastError: any;
-  
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const result = await fn();
-      return { result, attempts: attempt, success: true };
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxAttempts) {
-        const delay = baseDelay * Math.pow(1.5, attempt - 1);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-  }
-  
-  return { result: null, attempts: maxAttempts, success: false };
-}
-
 import { AutomationBridge } from './playwright-automation-bridge.js';
 
 const app = express();
@@ -117,38 +55,6 @@ app.post('/flow-automate-single', async (req, res) => {
   }
 });
 
-
-
-// VALIDAÇÃO INTELIGENTE: Verifica se os cliques realmente funcionaram
-async function validateAutomationSuccess(page: any, expectedAspect: string, expectedCount: number): Promise<{success: boolean; issues: string[]}> {
-  const issues: string[] = [];
-  try {
-    const body = ((await page.textContent('body').catch(() => '')) || '').toLowerCase();
-    
-    // Valida proporção
-    if (!new RegExp(expectedAspect.replace(':', '\\:')).test(body)) {
-      issues.push(`Proporção ${expectedAspect} não confirmada no body`);
-    }
-    
-    // Valida quantidade
-    const countText = `x${expectedCount}`;
-    if (!body.includes(countText)) {
-      issues.push(`Quantidade ${countText} não confirmada no body`);
-    }
-    
-    // Valida que o chip ainda está aberto
-    if (!body.includes('imagem') && !body.includes('vídeo')) {
-      issues.push('Chip parece ter fechado antes de completar');
-    }
-    
-    return {
-      success: issues.length === 0,
-      issues
-    };
-  } catch (e) {
-    return { success: false, issues: ['Erro ao validar: ' + String(e)] };
-  }
-}
 
 app.post('/flow-open-new-project', async (_req, res) => {
   try {
@@ -1605,6 +1511,245 @@ app.post('/flow-test-model-menu-v536-final', async (req, res) => {
       }
       result.modelSelected = modelSelected;
       result.modelTarget = targetModel;
+    }
+
+    result.finalUrl = page.url();
+    res.json({ ok: true, result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+
+app.get('/version-v538', async (_req, res) => {
+  res.json({ ok: true, version: 'V5.3.8-MODEL-POPUP-POSITION-ONLY' });
+});
+
+app.post('/flow-test-model-select-v538', async (req, res) => {
+  try {
+    const { aspectRatio, count, model } = req.body || {};
+    const aspect = String(aspectRatio || '9:16');
+    const imageCount = Number(count || 1);
+    let targetModel = String(model || 'Nano Banana 2');
+
+    if (targetModel.toLowerCase().includes('pro')) targetModel = 'Nano Banana Pro';
+    else if (targetModel.toLowerCase().includes('nano banana 2')) targetModel = 'Nano Banana 2';
+    else if (targetModel.toLowerCase().includes('imagem 4')) targetModel = 'Imagem 4';
+
+    const page = (bridge as any).pages['flow'];
+    if (!page) throw new Error('Flow não está aberto.');
+
+    await page.bringToFront().catch(() => {});
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1400);
+
+    const result: any = {
+      version: 'V5.3.8-MODEL-POPUP-POSITION-ONLY',
+      chipClicked: false,
+      imageClicked: false,
+      aspectClicked: false,
+      countClicked: false,
+      modelMenuClicked: false,
+      modelClicked: false,
+      method: '',
+      notes: [],
+      targetModel,
+      url: page.url()
+    };
+
+    const safeCount = async (loc: any) => {
+      try { return await loc.count(); } catch { return 0; }
+    };
+
+    const popupCounts = async () => ({
+      popper: await safeCount(page.locator('[data-radix-popper-content-wrapper]')),
+      menu: await safeCount(page.locator('[role="menu"]')),
+      listbox: await safeCount(page.locator('[role="listbox"]')),
+      dialog: await safeCount(page.locator('[role="dialog"]')),
+    });
+
+    const clickFirst = async (locators: any[], label: string, settle = 900) => {
+      for (const loc of locators) {
+        try {
+          const n = await safeCount(loc);
+          result.notes.push(`${label}: count=${n}`);
+          if (!n) continue;
+          const el = loc.first();
+          await el.scrollIntoViewIfNeeded().catch(() => {});
+          await el.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+          await el.click({ timeout: 5000 });
+          await page.waitForLoadState('domcontentloaded').catch(() => {});
+          await page.waitForTimeout(settle);
+          result.notes.push(`clicou: ${label}`);
+          return true;
+        } catch (e: any) {
+          result.notes.push(`falhou ${label}: ${String(e?.message || e).slice(0,160)}`);
+        }
+      }
+      result.notes.push(`não achou: ${label}`);
+      return false;
+    };
+
+    const composer = () => page.locator('xpath=//div[contains(., "O que você quer criar?")]').first();
+
+    const openChip = async () => {
+      const composerArea = composer();
+      result.composerFound = (await safeCount(composerArea)) > 0;
+      return await clickFirst([
+        composerArea.locator('button').filter({ hasText: /nano banana|imagem 4|x[1-4]|16:9|4:3|1:1|3:4|9:16/i }),
+        composerArea.locator('[role="button"]').filter({ hasText: /nano banana|imagem 4|x[1-4]|16:9|4:3|1:1|3:4|9:16/i }),
+        page.locator('button').filter({ hasText: /nano banana|imagem 4|x[1-4]|16:9|4:3|1:1|3:4|9:16/i }),
+        page.locator('[role="button"]').filter({ hasText: /nano banana|imagem 4|x[1-4]|16:9|4:3|1:1|3:4|9:16/i }),
+      ], 'chip de configuração', 1300);
+    };
+
+    result.chipClicked = await openChip();
+    await page.waitForTimeout(900);
+
+    const findPanelBox = async () => {
+      const panelCandidates = [
+        page.locator('[data-radix-popper-content-wrapper]').first(),
+        page.locator('[role="dialog"]').first(),
+        page.locator('[role="menu"]').first(),
+        page.locator('[role="listbox"]').first(),
+        page.locator('body').first(),
+      ];
+
+      for (let i = 0; i < panelCandidates.length; i++) {
+        const panel = panelCandidates[i];
+        try {
+          const n = await safeCount(panel);
+          result.notes.push(`panel candidate ${i}: count=${n}`);
+          if (!n) continue;
+          const box = await panel.boundingBox().catch(() => null);
+          result.notes.push(`panel candidate ${i}: box=${box ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)},${Math.round(box.height)}` : 'null'}`);
+          if (box && box.width > 120 && box.height > 120) return { box, index: i };
+        } catch (e: any) {
+          result.notes.push(`panel candidate ${i} falhou: ${String(e?.message || e).slice(0,140)}`);
+        }
+      }
+      return { box: null, index: -1 };
+    };
+
+    const getNewestDifferentPopupBox = async (mainBox: any) => {
+      // IMPORTANT: no text click. Only bounding boxes.
+      const groups = [
+        page.locator('[data-radix-popper-content-wrapper]'),
+        page.locator('[role="menu"]'),
+        page.locator('[role="listbox"]'),
+        page.locator('[role="dialog"]'),
+      ];
+
+      for (const group of groups) {
+        const n = await safeCount(group);
+        for (let j = n - 1; j >= 0; j--) {
+          try {
+            const box = await group.nth(j).boundingBox().catch(() => null);
+            if (!box || box.width < 80 || box.height < 50) continue;
+
+            const sameAsMain =
+              mainBox &&
+              Math.abs(box.x - mainBox.x) < 5 &&
+              Math.abs(box.y - mainBox.y) < 5 &&
+              Math.abs(box.width - mainBox.width) < 5 &&
+              Math.abs(box.height - mainBox.height) < 5;
+
+            result.notes.push(`popup real candidate ${j}: box=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)},${Math.round(box.height)} sameAsMain=${sameAsMain ? 'sim' : 'não'}`);
+
+            if (!sameAsMain) return box;
+          } catch {}
+        }
+      }
+      return null;
+    };
+
+    let { box: panelBox } = await findPanelBox();
+
+    if (panelBox) {
+      // Imagem
+      const imgX = panelBox.x + 70;
+      const imgY = panelBox.y + 48;
+      await page.mouse.click(imgX, imgY);
+      await page.waitForTimeout(800);
+      result.imageClicked = true;
+      result.notes.push(`clicou imagem posição: x=${Math.round(imgX)} y=${Math.round(imgY)}`);
+
+      // Proporção
+      const ratios = ['16:9', '4:3', '1:1', '3:4', '9:16'];
+      const aspectIdx = Math.max(0, ratios.indexOf(aspect));
+      const leftMargin = panelBox.width * 0.12;
+      const usable = panelBox.width - (panelBox.width * 0.24);
+      const gap = usable / 4;
+      const aspectX = panelBox.x + leftMargin + (aspectIdx * gap);
+      const aspectY = panelBox.y + panelBox.height * 0.39;
+      await page.mouse.click(aspectX, aspectY);
+      await page.waitForTimeout(800);
+      result.aspectClicked = true;
+      result.notes.push(`clicou proporção: ${aspect} x=${Math.round(aspectX)} y=${Math.round(aspectY)} idx=${aspectIdx}`);
+
+      // Quantidade
+      const countIdx = Math.min(3, Math.max(0, imageCount - 1));
+      const countLeftMargin = panelBox.width * 0.16;
+      const countUsable = panelBox.width - (panelBox.width * 0.32);
+      const countGap = countUsable / 3;
+      const countX = panelBox.x + countLeftMargin + (countIdx * countGap);
+      const countY = panelBox.y + panelBox.height * 0.55;
+      await page.mouse.click(countX, countY);
+      await page.waitForTimeout(800);
+      result.countClicked = true;
+      result.notes.push(`clicou quantidade: x${imageCount} x=${Math.round(countX)} y=${Math.round(countY)} idx=${countIdx}`);
+
+      const beforePopups = await popupCounts();
+      result.notes.push(`V538 antes menu modelo: popups=${JSON.stringify(beforePopups)}`);
+
+      // Confirmed point from V5.3.6: center-upper-model.
+      const modelMenuX = panelBox.x + panelBox.width * 0.50;
+      const modelMenuY = panelBox.y + panelBox.height * 0.72;
+      await page.mouse.click(modelMenuX, modelMenuY);
+      await page.waitForTimeout(1200);
+
+      const afterPopups = await popupCounts();
+      result.modelMenuClicked =
+        afterPopups.popper > beforePopups.popper ||
+        afterPopups.menu > beforePopups.menu ||
+        afterPopups.listbox > beforePopups.listbox ||
+        afterPopups.dialog > beforePopups.dialog;
+
+      result.clickedModelMenuPoint = { x: Math.round(modelMenuX), y: Math.round(modelMenuY) };
+      result.notes.push(`V538 abriu menu modelo: x=${Math.round(modelMenuX)} y=${Math.round(modelMenuY)} popups=${JSON.stringify(afterPopups)} menu=${result.modelMenuClicked ? 'ok' : 'falhou'}`);
+
+      // NEVER use text here. Select only by popup coordinates.
+      const subBox = await getNewestDifferentPopupBox(panelBox);
+
+      if (subBox) {
+        const models = ['Nano Banana Pro', 'Nano Banana 2', 'Imagem 4'];
+        const modelIdx = Math.max(0, models.indexOf(targetModel));
+
+        const modelX = subBox.x + subBox.width * 0.50;
+        const rowHeight = subBox.height / 3;
+        const modelY = subBox.y + rowHeight * (modelIdx + 0.5);
+
+        await page.mouse.click(modelX, modelY);
+        await page.waitForTimeout(1000);
+
+        result.modelClicked = true;
+        result.method = 'popup-position-only';
+        result.clickedModelPoint = {
+          x: Math.round(modelX),
+          y: Math.round(modelY),
+          modelIdx,
+          targetModel,
+          subBox: {
+            x: Math.round(subBox.x),
+            y: Math.round(subBox.y),
+            width: Math.round(subBox.width),
+            height: Math.round(subBox.height)
+          }
+        };
+        result.notes.push(`V538 clicou modelo somente por posição: ${targetModel} x=${Math.round(modelX)} y=${Math.round(modelY)} idx=${modelIdx}`);
+      } else {
+        result.notes.push('V538 não encontrou popup real diferente do painel principal para selecionar modelo.');
+      }
     }
 
     result.finalUrl = page.url();

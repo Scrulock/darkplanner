@@ -29,17 +29,6 @@ async function apiRequest(endpoint: string, options: RequestInit = {}) {
   if (!res.ok || data?.ok === false) throw new Error(data?.error || `Falha em ${endpoint}`)
   return data
 }
-
-function recommendAspectRatio(sceneType?: string): string {
-  if (!sceneType) return '9:16';
-  const lower = (sceneType || '').toLowerCase();
-  if (lower.includes('landscape') || lower.includes('paisagem')) return '16:9';
-  if (lower.includes('square') || lower.includes('quadrado')) return '1:1';
-  if (lower.includes('vertical') || lower.includes('portrait')) return '9:16';
-  if (lower.includes('banner')) return '4:3';
-  return '9:16';
-}
-
 function conversationToRaw(conversation: ConversationItem[]) {
   return conversation.map((item, index) => `${index + 1}. [${item.role.toUpperCase()}]\n${item.text}`).join('\n\n')
 }
@@ -168,18 +157,12 @@ export default function App() {
   const [directMessage, setDirectMessage] = useState('quero uma história sobre traição')
   const [ideasSubject, setIdeasSubject] = useState('vídeos curtos dramáticos nos Estados Unidos')
   const [ideasCount, setIdeasCount] = useState(10)
-    const [startTime, setStartTime] = useState<number | null>(null); // Track start time for execution duration
-  const [elapsedTime, setElapsedTime] = useState<string>(''); // Display elapsed time
-  const [successfulAttempts, setSuccessfulAttempts] = useState<Record<string, number>>({}); // Track successful attempts per image
-  const [imageAttempts, setImageAttempts] = useState<Record<string, number>>({}); // Track retry attempts per image
-  const [imageChecksums, setImageChecksums] = useState<Record<string, string>>({}); // Track image checksums to prevent duplicates
-  const [selectedModel, setSelectedModel] = useState<string>('Nano Banana 2'); // Track selected model for visual feedback
   const [ideasExtra, setIdeasExtra] = useState('')
   const [conversation, setConversation] = useState<ConversationItem[]>([])
   const [latest, setLatest] = useState('')
   const [sending, setSending] = useState(false)
   const [loading, setLoading] = useState({
-    agents:false, history:false, openChat:false, openFlow:false, openGrok:false, send:false, startImages:false, approveAllImages:false, startVideos:false, openNewProject:false, testFlowConfig:false, testImageOnly:false, testChipOnly:false, testSelectImage:false, testSelectImagePosition:false, testAspect:false, testCount:false, testModelMenu536:false
+    agents:false, history:false, openChat:false, openFlow:false, openGrok:false, send:false, startImages:false, approveAllImages:false, startVideos:false, openNewProject:false, testFlowConfig:false, testImageOnly:false, testChipOnly:false, testSelectImage:false, testSelectImagePosition:false, testAspect:false, testCount:false, testModelSelect538:false, testModelMenu536:false, testModelSelect538:false
   })
   const [sendNotice, setSendNotice] = useState('')
   const [sendError, setSendError] = useState('')
@@ -456,14 +439,14 @@ export default function App() {
     } catch (err:any) {
       setImageNotice(err.message || 'Falha ao testar quantidade.')
     } finally {
-      setLoading(prev => ({ ...prev, testCount:false }))
+      setLoading(prev => ({ ...prev, testCount:false, testModelSelect538:false }))
     }
   }
 
 
   const testFlowModelMenu536 = async () => {
     setLoading(prev => ({ ...prev, testModelMenu536:true }))
-    setImageNotice('Testando menu do modelo V5.3.6-FORCED-FINAL-UNIQUE...')
+    setImageNotice('Testando menu do modelo V5.3.8-MODEL-POPUP-POSITION-ONLY...')
     try {
       const data = await apiRequest('/flow-test-model-menu-v536-final', {
         method:'POST',
@@ -476,9 +459,32 @@ export default function App() {
       setImageNotice(`Menu modelo V536: version=${r.version || '-'} chip=${r.chipClicked ? 'ok' : 'falhou'} imagem=${r.imageClicked ? 'ok' : 'falhou'} proporção=${r.aspectClicked ? 'ok' : 'falhou'} quantidade=${r.countClicked ? 'ok' : 'falhou'} menu=${r.modelMenuClicked ? 'ok' : 'falhou'} método=${r.method || '-'} ponto=${r.clickedModelMenuPoint ? `${r.clickedModelMenuPoint.x},${r.clickedModelMenuPoint.y}` : '-'} | ${Array.isArray(r.notes) ? r.notes.join(' | ') : ''}`)
       await refreshServiceStatus('flow')
     } catch (err:any) {
-      setImageNotice(err.message || 'Falha ao testar menu do modelo V5.3.6-FORCED-FINAL-UNIQUE.')
+      setImageNotice(err.message || 'Falha ao testar menu do modelo V5.3.8-MODEL-POPUP-POSITION-ONLY.')
     } finally {
-      setLoading(prev => ({ ...prev, testModelMenu536:false }))
+      setLoading(prev => ({ ...prev, testModelMenu536:false, testModelSelect538:false }))
+    }
+  }
+
+
+  const testFlowModelSelect538 = async () => {
+    setLoading(prev => ({ ...prev, testModelSelect538:true }))
+    setImageNotice('Testando seleção do modelo V5.3.8-MODEL-POPUP-POSITION-ONLY...')
+    try {
+      const data = await apiRequest('/flow-test-model-select-v538', {
+        method:'POST',
+        body: JSON.stringify({
+          aspectRatio: imageSettings.orientation,
+          count: imageSettings.perScene,
+          model: imageSettings.model,
+        })
+      })
+      const r = data.result || {}
+      setImageNotice(`Modelo V538: version=${r.version || '-'} chip=${r.chipClicked ? 'ok' : 'falhou'} imagem=${r.imageClicked ? 'ok' : 'falhou'} proporção=${r.aspectClicked ? 'ok' : 'falhou'} quantidade=${r.countClicked ? 'ok' : 'falhou'} menu=${r.modelMenuClicked ? 'ok' : 'falhou'} modelo=${r.modelClicked ? 'ok' : 'falhou'} alvo=${r.targetModel || '-'} método=${r.method || '-'} ponto=${r.clickedModelPoint ? `${r.clickedModelPoint.x},${r.clickedModelPoint.y}` : '-'} | ${Array.isArray(r.notes) ? r.notes.join(' | ') : ''}`)
+      await refreshServiceStatus('flow')
+    } catch (err:any) {
+      setImageNotice(err.message || 'Falha ao testar seleção do modelo V5.3.8-MODEL-POPUP-POSITION-ONLY.')
+    } finally {
+      setLoading(prev => ({ ...prev, testModelSelect538:false }))
     }
   }
 
@@ -649,8 +655,8 @@ export default function App() {
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
       <div style={styles.container}>
         <div style={styles.hero}>
-          <h1 style={styles.title}>DarkPlanner V5.3.6-FORCED-FINAL-UNIQUE</h1>
-          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.3.6-FORCED-FINAL-UNIQUE</div>
+          <h1 style={styles.title}>DarkPlanner V5.3.8-MODEL-POPUP-POSITION-ONLY</h1>
+          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.3.8-MODEL-POPUP-POSITION-ONLY</div>
           <div style={styles.sub}>Rollback seguro da V4.8. Mantém a base anterior sem o diagnóstico que causou erro de contexto.</div>
 
           <div style={styles.serviceRow}>
@@ -834,8 +840,8 @@ export default function App() {
                   </button>
                 </div>
                 <div style={{ ...styles.row2, marginTop: 12 }}>
-                  <button style={styles.btnSecondary} onClick={testFlowModelMenu536} disabled={loading.testModelMenu536}>
-                    {loading.testModelMenu536 ? <Spinner /> : null}TESTAR MENU MODELO V5.3.6-FORCED-FINAL-UNIQUE
+                  <button style={styles.btnSecondary} onClick={testFlowModelSelect538} disabled={loading.testModelSelect538}>
+                    {loading.testModelSelect538 ? <Spinner /> : null}TESTAR MODELO V5.3.8-MODEL-POPUP-POSITION-ONLY
                   </button>
                   <div style={styles.statusBox}>Escolha a proporção no seletor acima. Depois use 'Testar quantidade'. Esta versão abre chip, marca Imagem e tenta selecionar a proporção.</div>
                 </div>
