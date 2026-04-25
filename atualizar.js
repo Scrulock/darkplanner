@@ -1,4 +1,4 @@
-﻿/**
+/**
  * DARKPLANNER — Auto Update
  */
 const fs = require('fs');
@@ -19,7 +19,9 @@ async function downloadPatch() {
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         try {
-          resolve(JSON.parse(data));
+          // Remove BOM (Byte Order Mark) antes de fazer parse
+          const clean = data.replace(/^\uFEFF/, '').trim();
+          resolve(JSON.parse(clean));
         } catch (e) {
           reject('❌ patch.json inválido: ' + e.message);
         }
