@@ -1,0 +1,21 @@
+{
+  "name": "darkplanner-backend",
+  "version": "5.3.6",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/automation-bridge-server.ts",
+    "login": "tsx src/manual-login.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "playwright": "^1.53.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.15.21",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

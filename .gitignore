@@ -1,0 +1,6 @@
+node_modules/
+dist/
+runtime/
+*.bak
+patch.json
+.env
