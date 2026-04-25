@@ -386,7 +386,7 @@ async flowAutomateSingleScene(settings: {
   const steps: Record<string, string> = {};
   const notes: string[] = [];
 
-  // ── utilidades ────────────────────────────────────────────────────────────
+  // ── utilidades ─────────────────────────────────────��──────────────────────
   const safeCount = async (loc: any) => { try { return await loc.count(); } catch { return 0; } };
 
   const clickFirstVisible = async (locators: any[], settle = 500) => {
