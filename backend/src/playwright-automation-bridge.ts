@@ -715,3 +715,112 @@ function validateAutomationSteps(steps: any): {ok: boolean; issues: string[]} {
     issues
   };
 }
+
+// ===== CORREÇÃO CRÍTICA: Seleção de modelo com 3 estratégias =====
+async function selectModelInFlow(
+  page: any,
+  targetModel: string,
+  panelBox: any
+): Promise<{ success: boolean; method: string; issue?: string }> {
+  console.log(`\n[🎯 SELEÇÃO DE MODELO] Alvo: ${targetModel}`);
+  
+  // ESTRATÉGIA 1: Buscar por texto - MAIS CONFIÁVEL
+  console.log(`  [1/3] Tentando buscar por TEXTO...`);
+  const lastPopper = page.locator('[data-radix-popper-content-wrapper]').last();
+  const lastMenu = page.locator('[role="menu"]').last();
+  
+  const textSearches = [
+    { loc: lastPopper, name: 'lastPopper' },
+    { loc: lastMenu, name: 'lastMenu' },
+    { loc: page, name: 'page' }
+  ];
+  
+  for (const search of textSearches) {
+    try {
+      // Procura por texto PARCIAL (ignora emojis)
+      const selector = search.loc.getByText(targetModel, { exact: false });
+      const count = await selector.count().catch(() => 0);
+      
+      if (count > 0) {
+        console.log(`  ✅ Encontrou em ${search.name}: ${count} ocorrência(s)`);
+        await selector.first().click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(700);
+        
+        // Valida que clicou mesmo
+        const nowVisible = await page.getByText(targetModel).count() > 0;
+        if (nowVisible) {
+          console.log(`  ✅ SUCESSO [ESTRATÉGIA 1/TEXTO]`);
+          return { success: true, method: 'text-match' };
+        }
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Falhou em ${search.name}`);
+    }
+  }
+  
+  // ESTRATÉGIA 2: Usar coordenadas relativas ao painel - FALLBACK
+  console.log(`  [2/3] Tentando coordenadas relativas...`);
+  if (panelBox) {
+    const modelOrder = ['Nano Banana Pro', 'Nano Banana 2', 'Imagem 4'];
+    const idx = modelOrder.indexOf(targetModel);
+    
+    if (idx >= 0) {
+      // Tenta várias Y-ratios porque o submenu pode estar em posições diferentes
+      const yRatios = [0.68, 0.75, 0.82, 0.88];
+      
+      for (const yRatio of yRatios) {
+        try {
+          const startX = panelBox.width * 0.20;
+          const gap = panelBox.width * 0.20;
+          const x = panelBox.x + startX + (idx * gap);
+          const y = panelBox.y + panelBox.height * yRatio;
+          
+          console.log(`  Clicando em [${Math.round(x)}, ${Math.round(y)}] (yRatio=${yRatio})`);
+          await page.mouse.click(x, y);
+          await page.waitForTimeout(700);
+          
+          const modelNowVisible = await page.getByText(targetModel).count() > 0;
+          if (modelNowVisible) {
+            console.log(`  ✅ SUCESSO [ESTRATÉGIA 2/COORDENADA]`);
+            return { success: true, method: 'coordinate', yRatio };
+          }
+        } catch (e) {
+          console.log(`  ⚠️ Falhou com yRatio=${yRatio}`);
+        }
+      }
+    }
+  }
+  
+  // ESTRATÉGIA 3: Procurar em TODOS os popups (pode ter aberto múltiplos)
+  console.log(`  [3/3] Tentando todos os popups abertos...`);
+  try {
+    const allPopups = await page.locator('[data-radix-popper-content-wrapper]').all();
+    console.log(`  Encontrados ${allPopups.length} popup(s) aberto(s)`);
+    
+    // Tenta do ÚLTIMO para o PRIMEIRO (modelo geralmente está no último)
+    for (let i = allPopups.length - 1; i >= 0; i--) {
+      try {
+        const popup = allPopups[i];
+        const button = popup.locator(`text="${targetModel}"`);
+        const count = await button.count().catch(() => 0);
+        
+        if (count > 0) {
+          console.log(`  ✅ Encontrado no popup #${i}`);
+          await button.first().click({ timeout: 2000 });
+          await page.waitForTimeout(700);
+          
+          const confirmed = await page.getByText(targetModel).count() > 0;
+          if (confirmed) {
+            console.log(`  ✅ SUCESSO [ESTRATÉGIA 3/POPUP]`);
+            return { success: true, method: 'popup-search', popupIndex: i };
+          }
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.log(`  ⚠️ Erro ao buscar em popups`);
+  }
+  
+  console.log(`  ❌ FALHA: Nenhuma estratégia funcionou para "${targetModel}"`);
+  return { success: false, method: 'all-failed', issue: `não conseguiu selecionar ${targetModel}` };
+}
