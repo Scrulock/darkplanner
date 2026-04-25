@@ -698,3 +698,20 @@ async flowAutomateSingleScene(settings: {
 
 
 }
+
+// CORREÇÃO 2: Validação robusta de sucesso de automação
+function validateAutomationSteps(steps: any): {ok: boolean; issues: string[]} {
+  const issues: string[] = [];
+  
+  if (!steps.openChip || steps.openChip !== 'ok') issues.push('Falhou: chip não abriu');
+  if (!steps.mode || (steps.mode !== 'imagem-coord' && steps.mode !== 'imagem-text')) issues.push('Falhou: modo Imagem não selecionado');
+  if (!steps.aspect || steps.aspect === 'sem-painel') issues.push('Falhou: proporção não selecionada');
+  if (!steps.count || steps.count === 'sem-painel') issues.push('Falhou: quantidade não selecionada');
+  if (!steps.model) issues.push('Falhou: modelo não selecionado');
+  if (!steps.generate) issues.push('Falhou: não conseguiu enviar/gerar');
+  
+  return {
+    ok: issues.length === 0,
+    issues
+  };
+}
