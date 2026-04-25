@@ -157,7 +157,9 @@ export default function App() {
   const [directMessage, setDirectMessage] = useState('quero uma história sobre traição')
   const [ideasSubject, setIdeasSubject] = useState('vídeos curtos dramáticos nos Estados Unidos')
   const [ideasCount, setIdeasCount] = useState(10)
-    const [selectedModel, setSelectedModel] = useState<string>('Nano Banana 2'); // Track selected model for visual feedback
+    const [startTime, setStartTime] = useState<number | null>(null); // Track start time for execution duration
+  const [elapsedTime, setElapsedTime] = useState<string>(''); // Display elapsed time
+  const [selectedModel, setSelectedModel] = useState<string>('Nano Banana 2'); // Track selected model for visual feedback
   const [ideasExtra, setIdeasExtra] = useState('')
   const [conversation, setConversation] = useState<ConversationItem[]>([])
   const [latest, setLatest] = useState('')
