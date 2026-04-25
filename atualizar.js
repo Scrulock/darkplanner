@@ -1,77 +1,106 @@
+#!/usr/bin/env node
 /**
- * DARKPLANNER — Auto Update
+ * DarkPlanner — Auto Update v3.0
+ * Baixa patch publicamente do GitHub (sem token necessário)
  */
+
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const { execSync } = require('child_process');
 
-const PATCH_URL = 'https://raw.githubusercontent.com/Scrulock/darkplanner/main/patch.json';
-const PROJECT_ROOT = __dirname;
+const REPO = 'Scrulock/darkplanner';
+const BRANCH = 'main';
 
-console.log('\n🔄 DarkPlanner — Auto Update');
-console.log('=' .repeat(50));
+// ===== CORES =====
+const colors = {
+  reset: '\x1b[0m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+};
 
-async function downloadPatch() {
+function log(msg, type = 'info') {
+  const symbols = { info: '📥', success: '✅', error: '❌', warn: '⚠️ ' };
+  const colorMap = { info: 'cyan', success: 'green', error: 'red', warn: 'yellow' };
+  console.log(`${colors[colorMap[type]] || colors.reset}${symbols[type] || '•'} ${msg}${colors.reset}`);
+}
+
+// ===== BAIXAR PATCH =====
+function downloadPatch() {
   return new Promise((resolve, reject) => {
-    https.get(PATCH_URL, (res) => {
+    const options = {
+      hostname: 'raw.githubusercontent.com',
+      path: `/${REPO}/${BRANCH}/patch.json`,
+      method: 'GET',
+      headers: { 'User-Agent': 'DarkPlanner-Updater' }
+    };
+
+    https.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try {
-          // Remove BOM (Byte Order Mark) antes de fazer parse
-          const clean = data.replace(/^\uFEFF/, '').trim();
-          resolve(JSON.parse(clean));
+          data = data.replace(/^\uFEFF/, '').trim();
+          if (!data.startsWith('{')) throw new Error('Response não é JSON');
+          resolve(JSON.parse(data));
         } catch (e) {
-          reject('❌ patch.json inválido: ' + e.message);
+          reject(new Error(`JSON inválido: ${e.message}`));
         }
       });
-    }).on('error', reject);
+    }).on('error', reject).end();
   });
 }
 
-async function applyPatch(patch) {
+// ===== APLICAR PATCH =====
+function applyPatch(patch) {
+  log('Aplicando mudanças...', 'info');
+  
+  if (!patch.files || typeof patch.files !== 'object') {
+    throw new Error(`patch.files inválido`);
+  }
+  
+  const entries = Object.entries(patch.files);
+  if (entries.length === 0) throw new Error('Nenhum arquivo no patch');
+
   let applied = 0;
-  for (const file of patch.files) {
-    const dest = path.join(PROJECT_ROOT, file.path);
-    const dir = path.dirname(dest);
+  for (const [filepath, content] of entries) {
     try {
-      if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
-      if (fs.existsSync(dest)) { fs.copyFileSync(dest, dest + '.bak'); }
-      fs.writeFileSync(dest, file.content, 'utf8');
-      console.log('  ✅', file.path);
+      const dir = path.dirname(filepath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filepath, content, 'utf8');
+      log(`${filepath}`, 'success');
       applied++;
     } catch (e) {
-      console.error('  ❌', file.path, '—', e.message);
+      log(`${filepath}: ${e.message}`, 'error');
     }
   }
-  return applied;
+
+  log(`${applied}/${entries.length} arquivo(s) aplicado(s)`, 'success');
+  return true;
 }
 
-function gitCommitAndPush(version) {
+// ===== MAIN =====
+async function main() {
+  console.log('\n🔄 DarkPlanner — Auto Update');
+  console.log('==================================================');
   try {
-    console.log('\n📤 Fazendo commit e push...');
-    execSync('git add .', { stdio: 'inherit' });
-    execSync(`git commit -m "Update: ${version || 'patch from Claude'}"`, { stdio: 'inherit' });
-    execSync('git push origin main', { stdio: 'inherit' });
-    console.log('✅ Push feito!\n');
-  } catch (e) {
-    console.log('⚠️  Erro ao fazer push\n');
-  }
-}
-
-(async () => {
-  try {
-    console.log('\n📥 Baixando patch...');
+    log('Baixando patch...', 'info');
     const patch = await downloadPatch();
-    console.log(`   Versão: ${patch.version || 'N/A'}`);
-    console.log(`   Arquivos: ${patch.files.length}`);
-    console.log('\n📝 Aplicando mudanças...');
-    const applied = await applyPatch(patch);
-    console.log(`\n✅ ${applied} arquivo(s) atualizado(s)`);
-    gitCommitAndPush(patch.version);
-  } catch (err) {
-    console.error('\n❌ Erro:', err);
+    log(`Versão: ${patch.version}`, 'info');
+    log(`Arquivos: ${Object.keys(patch.files).length}`, 'info');
+    
+    applyPatch(patch);
+    
+    console.log('\n' + '='.repeat(50));
+    log('Atualização bem-sucedida!', 'success');
+    log('Rode agora: npm run dev', 'info');
+    console.log('='.repeat(50) + '\n');
+  } catch (e) {
+    log(`Erro: ${e.message}`, 'error');
     process.exit(1);
   }
-})();
+}
+
+main();
