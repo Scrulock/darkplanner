@@ -29,6 +29,17 @@ async function apiRequest(endpoint: string, options: RequestInit = {}) {
   if (!res.ok || data?.ok === false) throw new Error(data?.error || `Falha em ${endpoint}`)
   return data
 }
+
+function recommendAspectRatio(sceneType?: string): string {
+  if (!sceneType) return '9:16';
+  const lower = (sceneType || '').toLowerCase();
+  if (lower.includes('landscape') || lower.includes('paisagem')) return '16:9';
+  if (lower.includes('square') || lower.includes('quadrado')) return '1:1';
+  if (lower.includes('vertical') || lower.includes('portrait')) return '9:16';
+  if (lower.includes('banner')) return '4:3';
+  return '9:16';
+}
+
 function conversationToRaw(conversation: ConversationItem[]) {
   return conversation.map((item, index) => `${index + 1}. [${item.role.toUpperCase()}]\n${item.text}`).join('\n\n')
 }
@@ -159,6 +170,8 @@ export default function App() {
   const [ideasCount, setIdeasCount] = useState(10)
     const [startTime, setStartTime] = useState<number | null>(null); // Track start time for execution duration
   const [elapsedTime, setElapsedTime] = useState<string>(''); // Display elapsed time
+  const [imageAttempts, setImageAttempts] = useState<Record<string, number>>({}); // Track retry attempts per image
+  const [imageChecksums, setImageChecksums] = useState<Record<string, string>>({}); // Track image checksums to prevent duplicates
   const [selectedModel, setSelectedModel] = useState<string>('Nano Banana 2'); // Track selected model for visual feedback
   const [ideasExtra, setIdeasExtra] = useState('')
   const [conversation, setConversation] = useState<ConversationItem[]>([])
