@@ -1,4 +1,11 @@
 
+
+/**
+ * LOGGING SYSTEM V5.3.6
+ * - Rastreia todas as operações com timestamps
+ * - Mostra etapas do fluxo de automação
+ * - Facilita debugging de erros
+ */
 import express from 'express';
 import cors from 'cors';
 import { AutomationBridge } from './playwright-automation-bridge.js';
