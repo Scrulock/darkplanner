@@ -6,8 +6,63 @@
  * - Mostra etapas do fluxo de automação
  * - Facilita debugging de erros
  */
+
+// Cache global: rastreia qual modelo funcionou melhor
+const modelSuccessCache: Record<string, {attempts: number; successes: number; lastSuccess: Date}> = {};
+
+function recordModelAttempt(model: string, success: boolean) {
+  if (!modelSuccessCache[model]) {
+    modelSuccessCache[model] = { attempts: 0, successes: 0, lastSuccess: new Date() };
+  }
+  modelSuccessCache[model].attempts++;
+  if (success) {
+    modelSuccessCache[model].successes++;
+    modelSuccessCache[model].lastSuccess = new Date();
+  }
+}
+
+function getBestModel(): string {
+  let best = 'Nano Banana 2';
+  let bestScore = -1;
+  
+  for (const [model, data] of Object.entries(modelSuccessCache)) {
+    const score = data.successes / Math.max(1, data.attempts);
+    if (score > bestScore) {
+      best = model;
+      bestScore = score;
+    }
+  }
+  
+  return best;
+}
+
 import express from 'express';
 import cors from 'cors';
+
+// Retry automático com backoff exponencial
+async function retryWithBackoff(
+  fn: () => Promise<any>,
+  maxAttempts: number = 3,
+  baseDelay: number = 800
+): Promise<{result: any; attempts: number; success: boolean}> {
+  let lastError: any;
+  
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await fn();
+      return { result, attempts: attempt, success: true };
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        const delay = baseDelay * Math.pow(1.5, attempt - 1);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  
+  return { result: null, attempts: maxAttempts, success: false };
+}
+
 import { AutomationBridge } from './playwright-automation-bridge.js';
 
 const app = express();
@@ -62,6 +117,38 @@ app.post('/flow-automate-single', async (req, res) => {
   }
 });
 
+
+
+// VALIDAÇÃO INTELIGENTE: Verifica se os cliques realmente funcionaram
+async function validateAutomationSuccess(page: any, expectedAspect: string, expectedCount: number): Promise<{success: boolean; issues: string[]}> {
+  const issues: string[] = [];
+  try {
+    const body = ((await page.textContent('body').catch(() => '')) || '').toLowerCase();
+    
+    // Valida proporção
+    if (!new RegExp(expectedAspect.replace(':', '\\:')).test(body)) {
+      issues.push(`Proporção ${expectedAspect} não confirmada no body`);
+    }
+    
+    // Valida quantidade
+    const countText = `x${expectedCount}`;
+    if (!body.includes(countText)) {
+      issues.push(`Quantidade ${countText} não confirmada no body`);
+    }
+    
+    // Valida que o chip ainda está aberto
+    if (!body.includes('imagem') && !body.includes('vídeo')) {
+      issues.push('Chip parece ter fechado antes de completar');
+    }
+    
+    return {
+      success: issues.length === 0,
+      issues
+    };
+  } catch (e) {
+    return { success: false, issues: ['Erro ao validar: ' + String(e)] };
+  }
+}
 
 app.post('/flow-open-new-project', async (_req, res) => {
   try {

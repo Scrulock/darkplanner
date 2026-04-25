@@ -170,6 +170,7 @@ export default function App() {
   const [ideasCount, setIdeasCount] = useState(10)
     const [startTime, setStartTime] = useState<number | null>(null); // Track start time for execution duration
   const [elapsedTime, setElapsedTime] = useState<string>(''); // Display elapsed time
+  const [successfulAttempts, setSuccessfulAttempts] = useState<Record<string, number>>({}); // Track successful attempts per image
   const [imageAttempts, setImageAttempts] = useState<Record<string, number>>({}); // Track retry attempts per image
   const [imageChecksums, setImageChecksums] = useState<Record<string, string>>({}); // Track image checksums to prevent duplicates
   const [selectedModel, setSelectedModel] = useState<string>('Nano Banana 2'); // Track selected model for visual feedback
