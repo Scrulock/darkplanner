@@ -403,8 +403,43 @@ async flowAutomateSingleScene(settings: {
     }
     return false;
   };
+  const openPanelLocators = () => ([
+    page.locator('[data-radix-popper-content-wrapper]'),
+    page.locator('[role="menu"]'),
+    page.locator('[role="listbox"]'),
+    page.locator('[role="dialog"]'),
+  ]);
+  const clickTextInOpenPanels = async (text: string | RegExp, settle = 450) => {
+    const panels = openPanelLocators();
+    for (const panel of panels) {
+      try {
+        const target = panel.last().getByText(text as any, { exact: typeof text === 'string' });
+        if (!(await safeCount(target))) continue;
+        await target.first().click({ timeout: 2500 });
+        await page.waitForTimeout(settle);
+        return true;
+      } catch {}
+    }
+    return false;
+  };
+  const hasTextInOpenPanels = async (text: string | RegExp) => {
+    const panels = openPanelLocators();
+    for (const panel of panels) {
+      try {
+        const target = panel.last().getByText(text as any, { exact: false });
+        if (await safeCount(target)) return true;
+      } catch {}
+    }
+    return false;
+  };
 
   const getBody = async () => ((await page.textContent('body').catch(() => '')) || '');
+  const toModelName = (input: string) => {
+    const v = String(input || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (v.includes('pro')) return 'Nano Banana Pro';
+    if (v.includes('imagem 4') || v.includes('image 4')) return 'Imagem 4';
+    return 'Nano Banana 2';
+  };
 
   // Encontra o painel (popup) aberto após clicar no chip
   const findPanelBox = async () => {
@@ -464,7 +499,8 @@ async flowAutomateSingleScene(settings: {
   if (panelBox) {
     await page.mouse.click(panelBox.x + 70, panelBox.y + 48);
     await page.waitForTimeout(800);
-    steps.mode = 'imagem-coord';
+    const forceImageByText = (await clickTextInOpenPanels('Imagem', 350)) || (await clickTextInOpenPanels('Image', 350));
+    steps.mode = forceImageByText ? 'imagem-coord+text' : 'imagem-coord';
     notes.push(`clicou Imagem: x=${Math.round(panelBox.x + 70)} y=${Math.round(panelBox.y + 48)}`);
   } else {
     // fallback texto
@@ -493,8 +529,14 @@ async flowAutomateSingleScene(settings: {
   }
 
   // ── 4. Seleciona quantidade por coordenada calibrada ─────────────────────
-  if (panelBox) {
-    const countIdx = Math.min(3, Math.max(0, Number(settings.count) - 1));
+  const applyCount = async (countValue: number) => {
+    const safeCountValue = Math.min(4, Math.max(1, Number(countValue || 1)));
+    const asText = `x${safeCountValue}`;
+    const textSelected = await clickTextInOpenPanels(asText, 350);
+    if (textSelected) return { ok: true, via: 'text', value: asText };
+    if (!panelBox) return { ok: false, via: 'no-panel', value: asText };
+
+    const countIdx = Math.min(3, Math.max(0, safeCountValue - 1));
     const cLeft = panelBox.width * 0.16;
     const cUsable = panelBox.width * 0.68;
     const cGap = cUsable / 3;
@@ -502,8 +544,17 @@ async flowAutomateSingleScene(settings: {
     const cy = panelBox.y + panelBox.height * 0.55;
     await page.mouse.click(cx, cy);
     await page.waitForTimeout(800);
-    steps.count = `x${settings.count}`;
-    notes.push(`clicou quantidade x${settings.count}: x=${Math.round(cx)} y=${Math.round(cy)} idx=${countIdx}`);
+    return { ok: true, via: 'coord', value: asText, cx, cy, countIdx };
+  };
+
+  const countResult = await applyCount(Number(settings.count));
+  if (countResult.ok) {
+    steps.count = countResult.value;
+    if (countResult.via === 'coord') {
+      notes.push(`clicou quantidade ${countResult.value}: x=${Math.round((countResult as any).cx)} y=${Math.round((countResult as any).cy)} idx=${(countResult as any).countIdx}`);
+    } else {
+      notes.push(`selecionou quantidade ${countResult.value} por texto`);
+    }
   } else {
     steps.count = 'sem-painel';
   }
@@ -514,11 +565,7 @@ async flowAutomateSingleScene(settings: {
   // Tentamos múltiplas coordenadas até detectar que um popup novo apareceu.
 
   // Normaliza o nome do modelo alvo
-  let targetModelName = 'Nano Banana 2';
-  const ml = settings.model.toLowerCase();
-  if (ml.includes('pro'))           targetModelName = 'Nano Banana Pro';
-  else if (ml.includes('imagem 4')) targetModelName = 'Imagem 4';
-  else                              targetModelName = 'Nano Banana 2';
+  const targetModelName = toModelName(settings.model);
 
   let modelMenuOpened = false;
 
@@ -554,15 +601,9 @@ async flowAutomateSingleScene(settings: {
 
       // Também verifica se o texto do modelo alvo ficou visível no body
       const bodyNow = await getBody();
-      const modelVisible =
-        bodyNow.includes('Nano Banana Pro') ||
-        bodyNow.includes('Nano Banana 2')   ||
-        bodyNow.includes('Imagem 4');
-      const newModelsAppeared = modelVisible;
+      notes.push(`modelo tentativa xR=${a.xR} yR=${a.yR}: popup+=${popupIncreased}`);
 
-      notes.push(`modelo tentativa xR=${a.xR} yR=${a.yR}: popup+=${popupIncreased} modelTexto=${newModelsAppeared}`);
-
-      if (popupIncreased || newModelsAppeared) {
+      if (popupIncreased) {
         modelMenuOpened = true;
         steps.openModelMenu = `ok (xR=${a.xR} yR=${a.yR})`;
         break;
@@ -602,14 +643,14 @@ async flowAutomateSingleScene(settings: {
     const lastPopper = page.locator('[data-radix-popper-content-wrapper]').last();
     const lastMenu   = page.locator('[role="menu"]').last();
 
-    const modelOk = await clickFirstVisible([
-      lastPopper.getByText(targetModelName, { exact: false }),
-      lastMenu.getByText(targetModelName, { exact: false }),
-      page.locator('[role="listbox"]').last().getByText(targetModelName, { exact: false }),
-      page.locator('[role="dialog"]').last().getByText(targetModelName, { exact: false }),
-      page.getByRole('option', { name: new RegExp(targetModelName, 'i') }),
-      page.getByText(targetModelName, { exact: false }),
-    ], 700);
+    const modelOk =
+      (await clickTextInOpenPanels(targetModelName, 550)) ||
+      (await clickFirstVisible([
+        lastPopper.getByText(targetModelName, { exact: false }),
+        lastMenu.getByText(targetModelName, { exact: false }),
+        page.locator('[role="listbox"]').last().getByText(targetModelName, { exact: false }),
+        page.locator('[role="dialog"]').last().getByText(targetModelName, { exact: false }),
+      ], 550));
 
     if (modelOk) {
       selectedModel = targetModelName;
@@ -639,7 +680,65 @@ async flowAutomateSingleScene(settings: {
       }
     }
   }
+  // fallback final: usa helper robusto dedicado se ainda não confirmou seleção
+  if (!selectedModel && panelBox) {
+    const fallback = await selectModelInFlow(page, targetModelName, panelBox);
+    if (fallback.success) {
+      selectedModel = targetModelName;
+      notes.push(`selecao modelo ok helper: method=${fallback.method}`);
+    } else {
+      notes.push(`helper modelo falhou: ${fallback.issue || fallback.method}`);
+    }
+  }
   steps.model = selectedModel || (modelMenuOpened ? 'menu-abriu-sem-selecao(' + targetModelName + ')' : 'falhou');
+
+  // Reforça configurações após submenu de modelo (evita regressão de modo/quantidade)
+  const imageReasserted = (await clickTextInOpenPanels('Imagem', 300)) || (await clickTextInOpenPanels('Image', 300));
+  if (imageReasserted) notes.push('modo imagem reafirmado após seleção de modelo');
+
+  const countReassert = await applyCount(Number(settings.count));
+  if (countReassert.ok) {
+    steps.count = countReassert.value;
+    notes.push(`quantidade reafirmada: ${countReassert.value} via ${countReassert.via}`);
+  }
+
+  // Verificação final antes de fechar painel: tenta corrigir drift residual.
+  const expectedCountLabel = `x${Math.min(4, Math.max(1, Number(settings.count || 1)))}`;
+  if (!(await hasTextInOpenPanels(expectedCountLabel))) {
+    const countFix = await applyCount(Number(settings.count));
+    if (countFix.ok) {
+      steps.count = countFix.value;
+      notes.push(`count drift corrigido: ${countFix.value} via ${countFix.via}`);
+    } else {
+      notes.push('count drift não corrigido');
+    }
+  }
+  if (!(await hasTextInOpenPanels(settings.aspectRatio))) {
+    try {
+      if (panelBox) {
+        const ratios = ['16:9', '4:3', '1:1', '3:4', '9:16'];
+        const aspectIdx = Math.max(0, ratios.indexOf(settings.aspectRatio));
+        const leftMargin = panelBox.width * 0.12;
+        const usable = panelBox.width * 0.76;
+        const gap = usable / 4;
+        const ax = panelBox.x + leftMargin + aspectIdx * gap;
+        const ay = panelBox.y + panelBox.height * 0.39;
+        await page.mouse.click(ax, ay);
+        await page.waitForTimeout(450);
+        notes.push(`aspect drift corrigido: ${settings.aspectRatio}`);
+      }
+    } catch {}
+  }
+  if (!(await hasTextInOpenPanels(targetModelName))) {
+    const modelFix = await selectModelInFlow(page, targetModelName, panelBox);
+    if (modelFix.success) {
+      selectedModel = targetModelName;
+      steps.model = targetModelName;
+      notes.push(`modelo drift corrigido por helper: ${modelFix.method}`);
+    } else {
+      notes.push(`modelo drift não corrigido: ${modelFix.issue || modelFix.method}`);
+    }
+  }
 
   // Fecha painel clicando fora (garante que o composer fica ativo para digitar)
   if (panelBox) {
@@ -704,7 +803,7 @@ function validateAutomationSteps(steps: any): {ok: boolean; issues: string[]} {
   const issues: string[] = [];
   
   if (!steps.openChip || steps.openChip !== 'ok') issues.push('Falhou: chip não abriu');
-  if (!steps.mode || (steps.mode !== 'imagem-coord' && steps.mode !== 'imagem-text')) issues.push('Falhou: modo Imagem não selecionado');
+  if (!steps.mode || !['imagem-coord', 'imagem-text', 'imagem-coord+text'].includes(steps.mode)) issues.push('Falhou: modo Imagem não selecionado');
   if (!steps.aspect || steps.aspect === 'sem-painel') issues.push('Falhou: proporção não selecionada');
   if (!steps.count || steps.count === 'sem-painel') issues.push('Falhou: quantidade não selecionada');
   if (!steps.model) issues.push('Falhou: modelo não selecionado');
@@ -721,7 +820,7 @@ async function selectModelInFlow(
   page: any,
   targetModel: string,
   panelBox: any
-): Promise<{ success: boolean; method: string; issue?: string }> {
+): Promise<{ success: boolean; method: string; issue?: string; yRatio?: number; popupIndex?: number }> {
   console.log(`\n[🎯 SELEÇÃO DE MODELO] Alvo: ${targetModel}`);
   
   // ESTRATÉGIA 1: Buscar por texto - MAIS CONFIÁVEL
