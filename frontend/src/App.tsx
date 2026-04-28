@@ -493,6 +493,10 @@ export default function App() {
   const stopRequestedRef = useRef(false)
   const [isGenerating, setIsGenerating] = useState(false)
   
+  // V5.6.0 - Amplitude: pausa entre cenas esperando aprovação
+  const approvalResolveRef = useRef<(() => void) | null>(null)
+  const [waitingApprovalScene, setWaitingApprovalScene] = useState<number>(0) // 0 = não esperando
+  
   // V5.5.1 - Ref para acessar o estado atual de imagens (evita stale closure)
   const imagesRef = useRef<ImageItem[]>([])
   useEffect(() => {
@@ -511,13 +515,13 @@ export default function App() {
     setLoading(prev => ({ ...prev, startImages:true }))
     setImageNotice('🚀 Iniciando geração para todas as cenas...')
     
-    // V5.5.9 - WARMUP: garante que o Flow está aberto (resolve bug "1ª vez não funciona")
+    // V5.6.0 - WARMUP: garante que o Flow está aberto (resolve bug "1ª vez não funciona")
     try {
       await apiRequest('/service-status?name=flow', { method: 'GET' })
       await new Promise(r => setTimeout(r, 500))
     } catch {}
     
-    // V5.5.9 - FRESH START: TODA vez que clica Start, força abrir um NOVO PROJETO
+    // V5.6.0 - FRESH START: TODA vez que clica Start, força abrir um NOVO PROJETO
     // (vai pra home do Flow e clica em "Novo projeto")
     setImageNotice('🆕 Abrindo novo projeto no Flow...')
     try {
@@ -553,7 +557,7 @@ export default function App() {
           break
         }
         
-        // V5.5.9 - FIX progresso da cena 2 começando em 100%:
+        // V5.6.0 - FIX progresso da cena 2 começando em 100%:
         // Reset COMPLETO do progresso quando começa nova cena
         setImages(prev => prev.map(img => 
           img.sceneNumber === scene.number 
@@ -562,57 +566,21 @@ export default function App() {
         ))
         await advanceProgressForScene(scene.number)
         
-        // V5.5.9 - AMPLITUDE PELO MÉTODO DOS 3 PONTINHOS
-        // Em vez de mandar URLs (que mudam entre sessões), manda os NÚMEROS DAS CENAS
-        // O backend calcula a posição correta via: (sceneNumber - 1) * perScene + (variant - 1)
+        // V5.6.0 - AMPLITUDE: adiciona TODAS as imagens aprovadas do Flow como referência
+        // Como as reprovadas já foram deletadas, clicar "+" e selecionar tudo = só as aprovadas
         if (amplitude > 0 && index > 0) {
-          const startScene = Math.max(1, scene.number - amplitude)
-          const sceneNumbers: number[] = []
-          const approvedVariants: Record<number, number> = {}
-          
-          const currentImages = imagesRef.current
-          for (let s = startScene; s < scene.number; s++) {
-            // Verifica se essa cena tem imagens geradas
-            const hasImages = currentImages.some(img => img.sceneNumber === s && img.flowUrl)
-            if (!hasImages) continue
-            
-            sceneNumbers.push(s)
-            
-            // Se tem alguma aprovada, registra qual variante
-            const approvedInScene = currentImages.find(
-              img => img.sceneNumber === s && img.status === 'approved'
-            )
-            if (approvedInScene) {
-              approvedVariants[s] = approvedInScene.variant
+          setImageNotice(`🔗 Adicionando referências aprovadas ao comando...`)
+          try {
+            const refResult = await apiRequest('/flow-add-all-references', { method: 'POST' })
+            const refNotes = Array.isArray(refResult?.notes) ? refResult.notes.join(' | ') : ''
+            if (refResult?.ok) {
+              setImageNotice(`✅ ${refResult.included || 0} ref(s) adicionada(s) | ${refNotes}`)
+            } else {
+              setImageNotice(`⚠️ Refs falhou: ${refNotes || refResult?.error || '?'}`)
             }
-            // Senão, deixa o backend usar variant=1 como padrão
-          }
-          
-          if (sceneNumbers.length > 0) {
-            setImageNotice(`🔗 Incluindo cenas ${sceneNumbers.join(', ')} como referência (3 pontinhos)...`)
-            try {
-              const refResult = await apiRequest('/flow-set-references-by-position', {
-                method: 'POST',
-                body: JSON.stringify({ 
-                  sceneNumbers, 
-                  perScene: imageSettings.perScene,
-                  approvedVariants
-                })
-              })
-              const refOk = refResult?.included > 0
-              const refMethod = refResult?.method || 'desconhecido'
-              const refNotes = Array.isArray(refResult?.notes) ? refResult.notes.join(' || ') : ''
-              if (refOk) {
-                setImageNotice(`✅ ${refResult.included} ref(s) [${refMethod}] | ${refNotes}`)
-              } else {
-                setImageNotice(`⚠️ AMPLITUDE FALHOU | ${refNotes || 'sem detalhes'}`)
-              }
-              await new Promise(r => setTimeout(r, 1000))
-            } catch (e: any) {
-              setImageNotice(`⚠️ Erro refs: ${e.message}`)
-            }
-          } else {
-            setImageNotice(`ℹ️ Sem cenas anteriores com imagens geradas para referenciar.`)
+            await new Promise(r => setTimeout(r, 1000))
+          } catch (e: any) {
+            setImageNotice(`⚠️ Erro refs: ${e.message}`)
           }
         }
         
@@ -642,7 +610,7 @@ export default function App() {
           note: noteDetail
         } : img))
         
-        // V5.5.9 - Aguarda imagens NOVAS serem geradas no Flow
+        // V5.6.0 - Aguarda imagens NOVAS serem geradas no Flow
         // Progresso baseado em IMAGENS RECEBIDAS (não em texto % do Flow que dá ruído)
         setImageNotice(`⏳ Aguardando geração das imagens da cena ${scene.number}...`)
         const sceneStartTime = Date.now()
@@ -658,14 +626,14 @@ export default function App() {
         
         let imagesAssignedForScene = 0
         let lastImagesAssigned = -1
-        let stableLoops = 0  // V5.5.9: detecta se ficou sem progresso por X polls
+        let stableLoops = 0  // V5.6.0: detecta se ficou sem progresso por X polls
         
         while (Date.now() - sceneStartTime < maxWaitMs && imagesAssignedForScene < expectedImages) {
           if (stopRequestedRef.current) break
           
           await new Promise(r => setTimeout(r, 2500))
           
-          // V5.5.9 - Tenta capturar imagens (ÚNICA fonte de progresso)
+          // V5.6.0 - Tenta capturar imagens (ÚNICA fonte de progresso)
           try {
             const imgData = await apiRequest('/flow-images', { method: 'GET' })
             const totalImages = imgData.images?.length || 0
@@ -675,7 +643,7 @@ export default function App() {
               // Pega só as imagens NOVAS (geradas depois do baseline)
               const newImages = imgData.images.slice(baselineCount)
               
-              // V5.5.9 - DEDUPE no frontend: nunca atribui o mesmo originalSrc duas vezes
+              // V5.6.0 - DEDUPE no frontend: nunca atribui o mesmo originalSrc duas vezes
               setImages(prev => {
                 const updated = [...prev]
                 const usedFlowUrls = new Set(
@@ -707,7 +675,7 @@ export default function App() {
               setImageNotice(`📸 Cena ${scene.number}: ${imagesAssignedForScene}/${expectedImages} imagens recebidas`)
             }
             
-            // V5.5.9 - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
+            // V5.6.0 - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
             // 0 imgs = 10%, 1 = 32%, 2 = 55%, 3 = 78%, 4 = 100%
             const realProgress = imagesAssignedForScene === 0
               ? Math.min(85, 10 + Math.floor((Date.now() - sceneStartTime) / 1500))  // anima até 85%
@@ -720,7 +688,7 @@ export default function App() {
             ))
           } catch {}
           
-          // V5.5.9 - Detecção de stall: se não progride por 12 ciclos (30s), aborta polling
+          // V5.6.0 - Detecção de stall: se não progride por 12 ciclos (30s), aborta polling
           if (imagesAssignedForScene === lastImagesAssigned) {
             stableLoops++
             if (stableLoops >= 12 && imagesAssignedForScene > 0) {
@@ -748,6 +716,21 @@ export default function App() {
             }
           } catch {}
           setImageNotice(`⚠️ Cena ${scene.number}: nenhuma imagem detectada.${debugInfo}`)
+        }
+        
+        // V5.6.0 - AMPLITUDE: PAUSA esperando aprovação do usuário
+        if (amplitude > 0 && imagesAssignedForScene > 0 && !stopRequestedRef.current) {
+          setImageNotice(`⏸️ Cena ${scene.number}: Aprove pelo menos 1 imagem para continuar. As reprovadas serão deletadas do Flow.`)
+          setWaitingApprovalScene(scene.number)
+          
+          // Espera até o usuário clicar em "Aprovar" numa das imagens
+          await new Promise<void>(resolve => {
+            approvalResolveRef.current = resolve
+          })
+          
+          setWaitingApprovalScene(0)
+          setImageNotice(`✅ Cena ${scene.number} aprovada! Preparando próxima cena...`)
+          await new Promise(r => setTimeout(r, 1000))
         }
       }
       
@@ -887,7 +870,13 @@ export default function App() {
       }
     }
     
-    setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada. ${otherVariants.length} variante(s) descartada(s).`)
+    setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada. ${otherVariants.length} variante(s) deletada(s) do Flow.`)
+    
+    // V5.6.0 - Se está esperando aprovação, RESUME o loop de geração
+    if (approvalResolveRef.current && waitingApprovalScene === slot.sceneNumber) {
+      approvalResolveRef.current()
+      approvalResolveRef.current = null
+    }
   }
   
   // V5.5.0 - Reprovar imagem (deleta do Flow + sistema)
@@ -927,7 +916,7 @@ export default function App() {
       } : s))
     }
   }
-  // V5.5.9 - Refazer imagem: deleta no Flow, regenera no mesmo prompt
+  // V5.6.0 - Refazer imagem: deleta no Flow, regenera no mesmo prompt
   const retryImage = async (id: string) => {
     const slot = imagesRef.current.find(s => s.id === id)
     if (!slot) return
@@ -1099,8 +1088,8 @@ export default function App() {
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
       <div style={styles.container}>
         <div style={styles.hero}>
-          <h1 style={styles.title}>DarkPlanner V5.5.9</h1>
-          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.5.9 - Debug Massivo</div>
+          <h1 style={styles.title}>DarkPlanner V5.6.0</h1>
+          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.6.0 - Amplitude Approval</div>
           <div style={styles.sub}>Rollback seguro da V4.8. Mantém a base anterior sem o diagnóstico que causou erro de contexto.</div>
 
           <div style={styles.serviceRow}>
@@ -1273,23 +1262,22 @@ export default function App() {
                   </select>
                 </div>
                 
-                {/* V5.4.0 - SISTEMA DE AMPLITUDE */}
-                <div style={{ ...styles.row2, marginTop: 14, padding: 12, background: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.3)', borderRadius: 8 }}>
+                {/* V5.6.0 - AMPLITUDE ON/OFF */}
+                <div style={{ ...styles.row2, marginTop: 14, padding: 12, background: amplitude ? 'rgba(34, 197, 94, 0.12)' : 'rgba(255,255,255,0.03)', border: `1px solid ${amplitude ? 'rgba(34, 197, 94, 0.4)' : 'rgba(255,255,255,0.08)'}`, borderRadius: 8 }}>
                   <div>
-                    <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 6 }}>🔗 Amplitude (Imagens de Referência)</div>
+                    <div style={{ fontWeight: 700, color: amplitude ? '#22c55e' : '#94a3b8', marginBottom: 6 }}>🔗 Imagens de Referência</div>
                     <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                      Quantas cenas anteriores usar como referência. Ex: amplitude=2 → cena 5 usa imagens das cenas 3 e 4.
+                      {amplitude 
+                        ? 'ATIVO: Após cada cena, PAUSE para você aprovar 1 imagem. As reprovadas são deletadas. Cenas seguintes usam TODAS as aprovadas como referência.'
+                        : 'Desativado: as cenas serão geradas sem imagens de referência.'}
                     </div>
                   </div>
-                  <select style={styles.input} value={String(amplitude)} onChange={(e)=>setAmplitude(Number(e.target.value))}>
-                    <option value="0">❌ Desativado</option>
-                    <option value="1">1 cena anterior</option>
-                    <option value="2">2 cenas anteriores</option>
-                    <option value="3">3 cenas anteriores</option>
-                    <option value="5">5 cenas anteriores</option>
-                    <option value="10">10 cenas anteriores</option>
-                    <option value="999">Todas as cenas anteriores</option>
-                  </select>
+                  <button 
+                    style={{ ...styles.btnSecondary, background: amplitude ? '#22c55e' : '#374151', color: '#fff', minWidth: 100 }}
+                    onClick={() => setAmplitude(prev => prev ? 0 : 1)}
+                  >
+                    {amplitude ? '✅ Ativado' : '❌ Desativado'}
+                  </button>
                 </div>
                 
                 <div style={{ ...styles.row3, marginTop: 14 }}>
@@ -1315,6 +1303,17 @@ export default function App() {
                   </button>
                   <div style={styles.statusBox}>Use primeiro 'Testar Novo projeto'. Depois use 'Testar quantidade'.</div>
                 </div>
+                {waitingApprovalScene > 0 && (
+                  <div style={{ padding: 16, marginBottom: 12, background: 'rgba(234, 179, 8, 0.15)', border: '2px solid #eab308', borderRadius: 12, textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#eab308', marginBottom: 8 }}>
+                      ⏸️ AGUARDANDO APROVAÇÃO — Cena {waitingApprovalScene}
+                    </div>
+                    <div style={{ fontSize: 13, color: '#d4d4d8' }}>
+                      Aprove pelo menos 1 imagem da cena {waitingApprovalScene} para continuar.
+                      As imagens NÃO aprovadas serão deletadas do Flow.
+                    </div>
+                  </div>
+                )}
                 {imageNotice ? <div style={styles.toastOk}>{imageNotice}</div> : null}
 
                 {parsed.scenes.map(scene => {

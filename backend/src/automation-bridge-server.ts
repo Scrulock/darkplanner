@@ -1843,7 +1843,7 @@ app.get('/flow-images', async (_req, res) => {
 });
 
 /**
- * V5.5.9 - GET /flow-debug-images
+ * V5.6.0 - GET /flow-debug-images
  * DEBUG: lista TODAS as imagens da página (sem filtro)
  * Útil quando getFlowGeneratedImages retorna vazio mas há imagens visíveis
  */
@@ -1898,7 +1898,7 @@ app.post('/flow-set-references-by-urls', async (req, res) => {
 });
 
 /**
- * V5.5.9 - POST /flow-set-references-by-position
+ * V5.6.0 - POST /flow-set-references-by-position
  * AMPLITUDE PELO MÉTODO DOS 3 PONTINHOS (Incluir no comando)
  * Body: { sceneNumbers: number[], perScene: number, approvedVariants?: { [sceneNum]: variant } }
  */
@@ -1908,6 +1908,20 @@ app.post('/flow-set-references-by-position', async (req, res) => {
     if (!Array.isArray(sceneNumbers)) throw new Error('sceneNumbers deve ser array');
     if (typeof perScene !== 'number') throw new Error('perScene deve ser número');
     const result = await (bridge as any).setReferenceImagesByPosition({ sceneNumbers, perScene, approvedVariants });
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * V5.6.0 - POST /flow-add-all-references
+ * AMPLITUDE: Adiciona TODAS as imagens restantes do projeto como referência
+ * Clica "+" → seleciona cada geração → elas viram referências no comando
+ */
+app.post('/flow-add-all-references', async (_req, res) => {
+  try {
+    const result = await (bridge as any).addAllAsReferences();
     res.json({ ok: true, ...result });
   } catch (err: any) {
     res.json({ ok: false, error: String(err?.message || err) });
@@ -1953,8 +1967,8 @@ app.post('/flow-set-references', async (req, res) => {
 app.get('/version', async (_req, res) => {
   res.json({ 
     ok: true, 
-    version: 'V5.5.9', 
-    name: 'DarkPlanner V5.5.9 - Debug Massivo',
+    version: 'V5.6.0', 
+    name: 'DarkPlanner V5.6.0 - Amplitude Approval',
     features: [
       '🚀 Mantém mesmo projeto entre cenas (não volta pra home!)',
       '🛑 Botão Stop para pausar geração',
@@ -1969,6 +1983,6 @@ app.get('/version', async (_req, res) => {
 });
 
 app.listen(3017, () => {
-  console.log('🚀 DarkPlanner V5.5.9 backend em http://localhost:3017');
+  console.log('🚀 DarkPlanner V5.6.0 backend em http://localhost:3017');
   console.log('✨ Production-ready: amplitude inteligente + stop + imagens em tempo real');
 });

@@ -1194,6 +1194,177 @@ export class AutomationBridge {
   }
   
   /**
+   * V5.6.0 - AMPLITUDE: Adiciona TODAS as imagens do projeto como referência
+   * 
+   * Fluxo descoberto via DOM ao vivo:
+   *   1. Clica "+" (textContent === "add_2Criar") → abre dialog
+   *   2. Dialog tem lista de "gerações" (cenas) na esquerda
+   *   3. Clicar numa geração ADICIONA automaticamente como referência e FECHA o dialog
+   *   4. Para múltiplas refs: abre "+" de novo, clica próxima geração, etc
+   * 
+   * Como as imagens reprovadas já foram deletadas do Flow,
+   * TODAS as gerações restantes no dialog são de imagens aprovadas.
+   */
+  async addAllAsReferences() {
+    const page = this.pages.flow;
+    if (!page) return { ok: false, error: 'Flow não está aberto', notes: [] };
+    
+    const notes: string[] = [];
+    let included = 0;
+    
+    try {
+      // 1. Descobrir quantas gerações/cenas existem no dialog
+      // Abre "+" primeiro pra contar
+      const plusClicked = await page.evaluate(() => {
+        const plus = Array.from(document.querySelectorAll('button')).find(b => 
+          (b.textContent || '').trim() === 'add_2Criar' || (b.textContent || '').trim() === 'add_2'
+        );
+        if (plus) { (plus as HTMLElement).click(); return true; }
+        return false;
+      });
+      
+      if (!plusClicked) {
+        notes.push('Botão "+" (add_2Criar) não encontrado');
+        return { ok: false, error: 'Botão + não encontrado', notes };
+      }
+      
+      await page.waitForTimeout(1500);
+      
+      // Verifica se dialog abriu
+      const dialogInfo = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return null;
+        
+        // Conta itens de geração na lista lateral (DIVs com img, ~56px de altura)
+        const allDivs = Array.from(dialog.querySelectorAll('div'));
+        const sceneItems = allDivs.filter(d => {
+          const r = d.getBoundingClientRect();
+          return r.width >= 200 && r.width <= 300 
+              && r.height >= 40 && r.height <= 80 
+              && d.querySelector('img');
+        });
+        
+        // Dedupe por posição Y
+        const seen = new Set<number>();
+        const unique: Array<{y: number; centerX: number; centerY: number; text: string}> = [];
+        for (const s of sceneItems) {
+          const r = s.getBoundingClientRect();
+          const key = Math.round(r.top);
+          if (!seen.has(key)) {
+            seen.add(key);
+            unique.push({
+              y: r.top,
+              centerX: r.left + r.width / 2,
+              centerY: r.top + r.height / 2,
+              text: (s.textContent || '').trim().slice(0, 40),
+            });
+          }
+        }
+        
+        // Ordena por Y (topo = mais recente, baixo = mais antigo)
+        unique.sort((a, b) => a.y - b.y);
+        
+        return { count: unique.length, items: unique };
+      });
+      
+      if (!dialogInfo) {
+        notes.push('Dialog não abriu após clicar "+"');
+        return { ok: false, error: 'Dialog não abriu', notes };
+      }
+      
+      notes.push(`Dialog tem ${dialogInfo.count} geração(ões)`);
+      
+      if (dialogInfo.count === 0) {
+        await page.keyboard.press('Escape').catch(() => {});
+        return { ok: false, error: 'Dialog vazio', notes };
+      }
+      
+      // 2. Clica em cada geração (da mais antiga pra mais recente)
+      // Cada clique fecha o dialog, então preciso reabrir "+" entre cada um
+      const totalItems = dialogInfo.count;
+      
+      for (let i = totalItems - 1; i >= 0; i--) {
+        // Se não é o primeiro, precisa reabrir o "+"
+        if (included > 0) {
+          const reopened = await page.evaluate(() => {
+            const plus = Array.from(document.querySelectorAll('button')).find(b => 
+              (b.textContent || '').trim() === 'add_2Criar' || (b.textContent || '').trim() === 'add_2'
+            );
+            if (plus) { (plus as HTMLElement).click(); return true; }
+            return false;
+          });
+          if (!reopened) {
+            notes.push(`Falha ao reabrir "+" para item ${i}`);
+            break;
+          }
+          await page.waitForTimeout(1200);
+        }
+        
+        // Clica no item i do dialog (por coordenada, já que sei as posições)
+        const clicked = await page.evaluate((idx) => {
+          const dialog = document.querySelector('[role="dialog"]');
+          if (!dialog) return { ok: false, reason: 'no-dialog' };
+          
+          const allDivs = Array.from(dialog.querySelectorAll('div'));
+          const sceneItems = allDivs.filter(d => {
+            const r = d.getBoundingClientRect();
+            return r.width >= 200 && r.width <= 300 
+                && r.height >= 40 && r.height <= 80 
+                && d.querySelector('img');
+          });
+          
+          // Dedupe
+          const seen = new Set<number>();
+          const unique: HTMLElement[] = [];
+          for (const s of sceneItems) {
+            const r = s.getBoundingClientRect();
+            const key = Math.round(r.top);
+            if (!seen.has(key)) {
+              seen.add(key);
+              unique.push(s as HTMLElement);
+            }
+          }
+          unique.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          
+          if (idx >= unique.length) return { ok: false, reason: `idx ${idx} >= ${unique.length}` };
+          
+          const target = unique[idx];
+          const text = (target.textContent || '').trim().slice(0, 30);
+          target.click();
+          return { ok: true, text };
+        }, i);
+        
+        if (clicked.ok) {
+          included++;
+          notes.push(`[${i}] ✅ ref adicionada: "${clicked.text}"`);
+        } else {
+          notes.push(`[${i}] falha: ${clicked.reason}`);
+        }
+        
+        await page.waitForTimeout(800);
+      }
+      
+      // 3. Verifica quantas refs no composer
+      const refsInComposer = await page.evaluate(() => {
+        const cancelBtns = Array.from(document.querySelectorAll('button')).filter(b => 
+          (b.textContent || '').trim() === 'cancel'
+        );
+        return cancelBtns.filter(b => {
+          const r = b.getBoundingClientRect();
+          return r.top > 700;
+        }).length;
+      });
+      
+      notes.push(`Composer tem ${refsInComposer} ref(s)`);
+      
+      return { ok: included > 0, included: refsInComposer, notes, method: 'add-all-v560' };
+    } catch (err: any) {
+      try { await page.keyboard.press('Escape'); } catch {}
+      return { ok: false, error: String(err?.message || err), notes };
+    }
+  }
+
+  /**
    * Aprovar imagem - apenas marca como aprovada (não faz nada no Flow)
    * As imagens aprovadas ficam no sistema para usar como referência
    */
