@@ -10,8 +10,9 @@ type ImageItem = {
   id: string
   sceneNumber: number
   variant: number
-  url?: string
-  status: 'locked' | 'pending' | 'processing' | 'uploaded' | 'approved'
+  url?: string         // URL local (display)
+  flowUrl?: string     // V5.5.0: URL real da imagem no Flow (para aprovar/reprovar/referenciar)
+  status: 'locked' | 'pending' | 'processing' | 'uploaded' | 'approved' | 'rejected'
   prompt: string
   note?: string
   progress?: number
@@ -162,7 +163,7 @@ export default function App() {
   const [latest, setLatest] = useState('')
   const [sending, setSending] = useState(false)
   const [loading, setLoading] = useState({
-    agents:false, history:false, openChat:false, openFlow:false, openGrok:false, send:false, startImages:false, approveAllImages:false, startVideos:false, openNewProject:false, testFlowConfig:false, testImageOnly:false, testChipOnly:false, testSelectImage:false, testSelectImagePosition:false, testAspect:false, testCount:false, testModelSelect538:false, testModelMenu536:false, testModelSelect538:false
+    agents:false, history:false, openChat:false, openFlow:false, openGrok:false, send:false, startImages:false, approveAllImages:false, startVideos:false, openNewProject:false, testFlowConfig:false, testImageOnly:false, testChipOnly:false, testSelectImage:false, testSelectImagePosition:false, testAspect:false, testCount:false, testModelSelect538:false, testModelMenu536:false
   })
   const [sendNotice, setSendNotice] = useState('')
   const [sendError, setSendError] = useState('')
@@ -488,10 +489,44 @@ export default function App() {
     }
   }
 
+  // V5.5.0 - Flag para parar geração
+  const stopRequestedRef = useRef(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  
+  // V5.5.1 - Ref para acessar o estado atual de imagens (evita stale closure)
+  const imagesRef = useRef<ImageItem[]>([])
+  useEffect(() => {
+    imagesRef.current = images
+  }, [images])
+  
+  const stopImages = () => {
+    stopRequestedRef.current = true
+    setImageNotice('🛑 Stop solicitado. Aguardando finalização da cena atual...')
+  }
+
   const startImages = async () => {
     if (!parsed.scenes?.length) return
+    stopRequestedRef.current = false
+    setIsGenerating(true)
     setLoading(prev => ({ ...prev, startImages:true }))
-    setImageNotice('Executando Start automático para todas as cenas...')
+    setImageNotice('🚀 Iniciando geração para todas as cenas...')
+    
+    // V5.5.9 - WARMUP: garante que o Flow está aberto (resolve bug "1ª vez não funciona")
+    try {
+      await apiRequest('/service-status?name=flow', { method: 'GET' })
+      await new Promise(r => setTimeout(r, 500))
+    } catch {}
+    
+    // V5.5.9 - FRESH START: TODA vez que clica Start, força abrir um NOVO PROJETO
+    // (vai pra home do Flow e clica em "Novo projeto")
+    setImageNotice('🆕 Abrindo novo projeto no Flow...')
+    try {
+      await apiRequest('/flow-open-new-project', { method: 'POST' })
+      await new Promise(r => setTimeout(r, 2000))
+    } catch (e: any) {
+      setImageNotice(`⚠️ Falha ao abrir novo projeto: ${e.message}`)
+    }
+    
     const queue: ImageItem[] = []
     parsed.scenes.forEach((scene, sceneIndex) => {
       for (let i = 1; i <= imageSettings.perScene; i++) {
@@ -500,6 +535,7 @@ export default function App() {
           sceneNumber:scene.number,
           variant:i,
           url:undefined,
+          flowUrl:undefined,
           status: sceneIndex === 0 ? 'processing' : 'locked',
           prompt: scene.imagePrompt || '',
           note: sceneIndex === 0 ? 'Cena ativa' : 'Aguardando cena anterior',
@@ -511,10 +547,76 @@ export default function App() {
 
     try {
       for (const [index, scene] of parsed.scenes.entries()) {
-        if (index > 0) {
-          setImages(prev => prev.map(img => img.sceneNumber === scene.number ? { ...img, status:'processing', progress:1, note:'Cena ativa' } : img))
+        // V5.5.0 - Verifica STOP
+        if (stopRequestedRef.current) {
+          setImageNotice(`🛑 Geração pausada na cena ${scene.number}.`)
+          break
         }
+        
+        // V5.5.9 - FIX progresso da cena 2 começando em 100%:
+        // Reset COMPLETO do progresso quando começa nova cena
+        setImages(prev => prev.map(img => 
+          img.sceneNumber === scene.number 
+            ? { ...img, status:'processing', progress: 0, note: index === 0 ? 'Iniciando...' : 'Iniciando cena (com referências)' } 
+            : img
+        ))
         await advanceProgressForScene(scene.number)
+        
+        // V5.5.9 - AMPLITUDE PELO MÉTODO DOS 3 PONTINHOS
+        // Em vez de mandar URLs (que mudam entre sessões), manda os NÚMEROS DAS CENAS
+        // O backend calcula a posição correta via: (sceneNumber - 1) * perScene + (variant - 1)
+        if (amplitude > 0 && index > 0) {
+          const startScene = Math.max(1, scene.number - amplitude)
+          const sceneNumbers: number[] = []
+          const approvedVariants: Record<number, number> = {}
+          
+          const currentImages = imagesRef.current
+          for (let s = startScene; s < scene.number; s++) {
+            // Verifica se essa cena tem imagens geradas
+            const hasImages = currentImages.some(img => img.sceneNumber === s && img.flowUrl)
+            if (!hasImages) continue
+            
+            sceneNumbers.push(s)
+            
+            // Se tem alguma aprovada, registra qual variante
+            const approvedInScene = currentImages.find(
+              img => img.sceneNumber === s && img.status === 'approved'
+            )
+            if (approvedInScene) {
+              approvedVariants[s] = approvedInScene.variant
+            }
+            // Senão, deixa o backend usar variant=1 como padrão
+          }
+          
+          if (sceneNumbers.length > 0) {
+            setImageNotice(`🔗 Incluindo cenas ${sceneNumbers.join(', ')} como referência (3 pontinhos)...`)
+            try {
+              const refResult = await apiRequest('/flow-set-references-by-position', {
+                method: 'POST',
+                body: JSON.stringify({ 
+                  sceneNumbers, 
+                  perScene: imageSettings.perScene,
+                  approvedVariants
+                })
+              })
+              const refOk = refResult?.included > 0
+              const refMethod = refResult?.method || 'desconhecido'
+              const refNotes = Array.isArray(refResult?.notes) ? refResult.notes.join(' || ') : ''
+              if (refOk) {
+                setImageNotice(`✅ ${refResult.included} ref(s) [${refMethod}] | ${refNotes}`)
+              } else {
+                setImageNotice(`⚠️ AMPLITUDE FALHOU | ${refNotes || 'sem detalhes'}`)
+              }
+              await new Promise(r => setTimeout(r, 1000))
+            } catch (e: any) {
+              setImageNotice(`⚠️ Erro refs: ${e.message}`)
+            }
+          } else {
+            setImageNotice(`ℹ️ Sem cenas anteriores com imagens geradas para referenciar.`)
+          }
+        }
+        
+        // V5.5.0 - Indica se é a primeira cena (para abrir Novo projeto)
         const result = await apiRequest('/flow-automate-single', {
           method:'POST',
           body: JSON.stringify({
@@ -522,29 +624,142 @@ export default function App() {
             aspectRatio: imageSettings.orientation,
             count: imageSettings.perScene,
             model: imageSettings.model,
+            isFirstScene: index === 0,  // V5.5.0
           })
         })
+        
         const ok = !!result?.result?.ok
         const steps = result?.result?.steps || {}
-        const modelOk = steps.model && !steps.model.includes('falhou') && !steps.model.includes('sem-painel')
         const noteDetail = [
-          ok ? '✅ Automação completa' : '⚠️ Automação parcial',
-          `Modelo: ${modelOk ? steps.model : '❌ ' + (steps.model || 'não selecionado')}`,
-          `Proporção: ${steps.aspect || '?'}`,
-          `Qtd: ${steps.count || '?'}`,
-        ].join(' · ')
+          ok ? '✅ Enviado ao Flow' : '⚠️ Envio parcial',
+          steps.newProject === 'already-open' ? 'Mesmo projeto' : steps.newProject === 'clicked' ? 'Novo projeto' : '',
+          amplitude > 0 && index > 0 ? `🔗 Referências: cenas anteriores` : '',
+        ].filter(Boolean).join(' · ')
         setImages(prev => prev.map(img => img.sceneNumber === scene.number ? {
           ...img,
           status:'pending',
-          progress: ok ? 100 : 50,
+          progress: ok ? 50 : 30,
           note: noteDetail
         } : img))
+        
+        // V5.5.9 - Aguarda imagens NOVAS serem geradas no Flow
+        // Progresso baseado em IMAGENS RECEBIDAS (não em texto % do Flow que dá ruído)
+        setImageNotice(`⏳ Aguardando geração das imagens da cena ${scene.number}...`)
+        const sceneStartTime = Date.now()
+        const maxWaitMs = 180000  // 3 minutos
+        const expectedImages = imageSettings.perScene
+        
+        // V5.5.1 - Captura quantas imagens existem ANTES de gerar (baseline)
+        let baselineCount = 0
+        try {
+          const initialData = await apiRequest('/flow-images', { method: 'GET' })
+          baselineCount = initialData.images?.length || 0
+        } catch {}
+        
+        let imagesAssignedForScene = 0
+        let lastImagesAssigned = -1
+        let stableLoops = 0  // V5.5.9: detecta se ficou sem progresso por X polls
+        
+        while (Date.now() - sceneStartTime < maxWaitMs && imagesAssignedForScene < expectedImages) {
+          if (stopRequestedRef.current) break
+          
+          await new Promise(r => setTimeout(r, 2500))
+          
+          // V5.5.9 - Tenta capturar imagens (ÚNICA fonte de progresso)
+          try {
+            const imgData = await apiRequest('/flow-images', { method: 'GET' })
+            const totalImages = imgData.images?.length || 0
+            const newImagesCount = totalImages - baselineCount
+            
+            if (newImagesCount > imagesAssignedForScene) {
+              // Pega só as imagens NOVAS (geradas depois do baseline)
+              const newImages = imgData.images.slice(baselineCount)
+              
+              // V5.5.9 - DEDUPE no frontend: nunca atribui o mesmo originalSrc duas vezes
+              setImages(prev => {
+                const updated = [...prev]
+                const usedFlowUrls = new Set(
+                  updated.map(s => s.flowUrl).filter((u): u is string => !!u)
+                )
+                let assigned = 0
+                for (const img of newImages) {
+                  if (assigned >= expectedImages) break
+                  const originalSrc = img.originalSrc || img.src
+                  if (usedFlowUrls.has(originalSrc)) continue
+                  const slot = updated.find(s => s.sceneNumber === scene.number && !s.flowUrl)
+                  if (!slot) break
+                  slot.url = img.base64 || img.src
+                  slot.flowUrl = originalSrc
+                  slot.progress = 100
+                  slot.status = 'pending'
+                  slot.note = `✅ Imagem gerada · Aprovar/Reprovar`
+                  usedFlowUrls.add(originalSrc)
+                  assigned++
+                }
+                return updated
+              })
+              
+              // Recalcula imagesAssignedForScene com base nos slots realmente preenchidos
+              const filledNow = imagesRef.current.filter(
+                s => s.sceneNumber === scene.number && s.flowUrl
+              ).length
+              imagesAssignedForScene = filledNow
+              setImageNotice(`📸 Cena ${scene.number}: ${imagesAssignedForScene}/${expectedImages} imagens recebidas`)
+            }
+            
+            // V5.5.9 - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
+            // 0 imgs = 10%, 1 = 32%, 2 = 55%, 3 = 78%, 4 = 100%
+            const realProgress = imagesAssignedForScene === 0
+              ? Math.min(85, 10 + Math.floor((Date.now() - sceneStartTime) / 1500))  // anima até 85%
+              : Math.round(10 + (imagesAssignedForScene / expectedImages) * 90)
+            
+            setImages(prev => prev.map(img => 
+              img.sceneNumber === scene.number && !img.flowUrl
+                ? { ...img, progress: realProgress, note: `${realProgress}% · gerando no Flow` }
+                : img
+            ))
+          } catch {}
+          
+          // V5.5.9 - Detecção de stall: se não progride por 12 ciclos (30s), aborta polling
+          if (imagesAssignedForScene === lastImagesAssigned) {
+            stableLoops++
+            if (stableLoops >= 12 && imagesAssignedForScene > 0) {
+              // Já recebeu pelo menos 1 imagem mas as outras não vêm — aceita o que tem e segue
+              setImageNotice(`⚠️ Cena ${scene.number}: ${imagesAssignedForScene}/${expectedImages} (parando de esperar)`)
+              break
+            }
+          } else {
+            stableLoops = 0
+            lastImagesAssigned = imagesAssignedForScene
+          }
+        }
+        
+        if (imagesAssignedForScene === 0) {
+          let debugInfo = ''
+          try {
+            const debug = await apiRequest('/flow-debug-images', { method: 'GET' })
+            if (debug.all && debug.all.length > 0) {
+              const sample = debug.all.slice(0, 3).map((i: any) => 
+                `${i.nw}x${i.nh} ${i.src.substring(0, 50)}...`
+              ).join(' | ')
+              debugInfo = ` (Debug: ${debug.all.length} imgs total. Amostra: ${sample})`
+            } else {
+              debugInfo = ' (Debug: nenhum <img> tag encontrada na página)'
+            }
+          } catch {}
+          setImageNotice(`⚠️ Cena ${scene.number}: nenhuma imagem detectada.${debugInfo}`)
+        }
       }
+      
       await refreshServiceStatus('flow')
-      setImageNotice('Start concluído. O Flow recebeu a tentativa de automação para todas as cenas.')
+      if (!stopRequestedRef.current) {
+        setImageNotice('✅ Geração concluída! Aprove ou reprove as imagens.')
+      }
     } catch (err:any) {
-      setImageNotice(`Falha no Start: ${err.message || err}`)
+      setImageNotice(`❌ Falha no Start: ${err.message || err}`)
     } finally {
+      setIsGenerating(false)
+      stopRequestedRef.current = false
       setLoading(prev => ({ ...prev, startImages:false }))
     }
   }
@@ -573,17 +788,246 @@ export default function App() {
     setImages(prev => prev.map(slot => slot.id === id ? { ...slot, url, status:'uploaded', note:file.name, progress:100 } : slot))
     setImageNotice('Imagem enviada com sucesso.')
   }
-  const approveImage = (id:string) => {
-    setImages(prev => {
-      const updated = prev.map(slot => slot.id === id ? { ...slot, status:'approved', note:'Imagem aprovada', progress:100 } : slot)
-      const slot = updated.find(s => s.id === id)
-      return slot ? unlockNextSceneIfNeeded(slot.sceneNumber, updated) : updated
-    })
-    setImageNotice('Imagem aprovada.')
+  
+  // ═══════════════════════════════════════════════════════════════════════
+  // V5.4.0 - NOVAS FUNÇÕES
+  // ═══════════════════════════════════════════════════════════════════════
+  
+  // Polling em tempo real do progresso do Flow
+  const pollFlowProgress = async () => {
+    try {
+      const data = await apiRequest('/flow-progress', { method: 'GET' })
+      if (data.progresses && data.progresses.length > 0) {
+        // Atualiza imagens com base no progresso retornado pelo Flow
+        setImages(prev => {
+          const updated = [...prev]
+          data.progresses.forEach((prog: any, idx: number) => {
+            const targetImg = updated.find(img => img.status === 'processing' || img.progress! < 100)
+            if (targetImg) {
+              targetImg.progress = prog.percent
+              targetImg.note = `${prog.percent}% - ${prog.status}`
+              if (prog.thumbnail) {
+                targetImg.url = prog.thumbnail
+                if (prog.percent >= 100) targetImg.status = 'pending'
+              }
+            }
+          })
+          return updated
+        })
+      }
+      
+      // Tenta também pegar imagens completas
+      const imgData = await apiRequest('/flow-images', { method: 'GET' })
+      if (imgData.images && imgData.images.length > 0) {
+        setImages(prev => {
+          const updated = [...prev]
+          imgData.images.forEach((img: any, idx: number) => {
+            // Procura primeiro slot sem URL e atualiza
+            const slot = updated.find(s => !s.url && s.status !== 'approved')
+            if (slot) {
+              slot.url = img.src
+              slot.progress = 100
+              slot.status = 'pending'
+              slot.note = '✅ Imagem gerada no Flow'
+            }
+          })
+          return updated
+        })
+      }
+    } catch (err) {
+      // Silently ignore polling errors
+    }
   }
-  const retryImage = (id:string) => {
-    setImages(prev => prev.map(slot => slot.id === id ? { ...slot, status:'pending', url:undefined, note:'Refação pronta para novo upload', progress:0 } : slot))
-    setImageNotice('Imagem marcada para refação.')
+  
+  // Sistema de Amplitude - usa imagens APROVADAS das cenas anteriores como referência
+  const [amplitude, setAmplitude] = useState<number>(0) // 0 = não usar amplitude
+  
+  // V5.5.1 - Polling redundante removido. startImages já faz polling embutido no loop de cenas.
+  // Manter este useEffect causava conflito: dois pollings escrevendo no mesmo estado simultaneamente.
+  
+  // ═══════════════════════════════════════════════════════════════════════
+  
+  // V5.5.0 - Aprovar imagem específica (e reprovar TODAS as outras variantes da mesma cena no Flow)
+  const approveImage = async (id: string) => {
+    const slot = images.find(s => s.id === id)
+    if (!slot) return
+    
+    setImageNotice(`✅ Aprovando imagem ${slot.variant} da cena ${slot.sceneNumber}...`)
+    
+    // Pega todas as outras variantes da mesma cena (que serão reprovadas/deletadas)
+    const otherVariants = images.filter(
+      img => img.sceneNumber === slot.sceneNumber && img.id !== id && img.flowUrl
+    )
+    
+    // Marca esta como aprovada
+    setImages(prev => {
+      const updated = prev.map(s => {
+        if (s.id === id) {
+          return { ...s, status: 'approved' as const, note: '✅ Aprovada (será usada como referência)', progress: 100 }
+        }
+        // As outras variantes desta cena ficam como "rejected" no sistema
+        if (s.sceneNumber === slot.sceneNumber && s.id !== id) {
+          return { ...s, status: 'rejected' as const, note: '🗑️ Descartada (não será usada)', progress: 0 }
+        }
+        return s
+      })
+      const updatedSlot = updated.find(u => u.id === id)
+      return updatedSlot ? unlockNextSceneIfNeeded(updatedSlot.sceneNumber, updated) : updated
+    })
+    
+    // V5.5.0 - Deleta as outras variantes do Flow para limpar o projeto
+    for (const other of otherVariants) {
+      if (other.flowUrl) {
+        try {
+          await apiRequest('/flow-delete-image', {
+            method: 'POST',
+            body: JSON.stringify({ imageUrl: other.flowUrl })
+          })
+        } catch {}
+      }
+    }
+    
+    setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada. ${otherVariants.length} variante(s) descartada(s).`)
+  }
+  
+  // V5.5.0 - Reprovar imagem (deleta do Flow + sistema)
+  const rejectImage = async (id: string) => {
+    const slot = images.find(s => s.id === id)
+    if (!slot) return
+    
+    setImageNotice(`🗑️ Reprovando imagem ${slot.variant} da cena ${slot.sceneNumber}...`)
+    
+    try {
+      // Deleta no Flow se tem URL
+      if (slot.flowUrl) {
+        await apiRequest('/flow-delete-image', {
+          method: 'POST',
+          body: JSON.stringify({ imageUrl: slot.flowUrl })
+        })
+      }
+      
+      // Marca como reprovada no sistema
+      setImages(prev => prev.map(s => s.id === id ? {
+        ...s,
+        status: 'rejected' as const,
+        url: undefined,
+        flowUrl: undefined,
+        note: '❌ Reprovada e deletada do Flow',
+        progress: 0
+      } : s))
+      
+      setImageNotice('✅ Imagem reprovada e deletada do Flow.')
+    } catch (err: any) {
+      setImageNotice(`⚠️ Erro ao deletar do Flow: ${err.message}`)
+      // Mesmo com erro, marca como reprovada no sistema
+      setImages(prev => prev.map(s => s.id === id ? {
+        ...s,
+        status: 'rejected' as const,
+        note: '❌ Reprovada (apenas no sistema)',
+      } : s))
+    }
+  }
+  // V5.5.9 - Refazer imagem: deleta no Flow, regenera no mesmo prompt
+  const retryImage = async (id: string) => {
+    const slot = imagesRef.current.find(s => s.id === id)
+    if (!slot) return
+    
+    setImageNotice(`🔄 Refazendo imagem ${slot.variant} da cena ${slot.sceneNumber}...`)
+    
+    // 1. Marca como processing visualmente
+    setImages(prev => prev.map(s => s.id === id ? {
+      ...s, status: 'processing', progress: 5, note: 'Deletando antiga e refazendo...'
+    } : s))
+    
+    // 2. Deleta no Flow se tem URL
+    if (slot.flowUrl) {
+      try {
+        await apiRequest('/flow-delete-image', {
+          method: 'POST',
+          body: JSON.stringify({ imageUrl: slot.flowUrl })
+        })
+      } catch {}
+    }
+    
+    // 3. Limpa imagem do slot
+    setImages(prev => prev.map(s => s.id === id ? {
+      ...s, url: undefined, flowUrl: undefined, progress: 10, note: 'Gerando nova imagem...'
+    } : s))
+    
+    // 4. Captura baseline antes de regenerar
+    let baselineCount = 0
+    try {
+      const initialData = await apiRequest('/flow-images', { method: 'GET' })
+      baselineCount = initialData.images?.length || 0
+    } catch {}
+    
+    // 5. Regenera apenas 1 imagem usando o mesmo prompt
+    try {
+      const scene = parsed.scenes.find(s => s.number === slot.sceneNumber)
+      if (!scene) {
+        setImageNotice('⚠️ Cena não encontrada para refazer')
+        return
+      }
+      
+      await apiRequest('/flow-automate-single', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: scene.imagePrompt || slot.prompt,
+          aspectRatio: imageSettings.orientation,
+          count: 1,  // só 1 imagem
+          model: imageSettings.model,
+          isFirstScene: false,  // não abre projeto novo
+        })
+      })
+      
+      // 6. Aguarda nova imagem chegar (até 90s)
+      const startTime = Date.now()
+      const maxWaitMs = 90000
+      let assigned = false
+      
+      while (Date.now() - startTime < maxWaitMs && !assigned) {
+        await new Promise(r => setTimeout(r, 2500))
+        
+        try {
+          const imgData = await apiRequest('/flow-images', { method: 'GET' })
+          const totalImages = imgData.images?.length || 0
+          
+          if (totalImages > baselineCount) {
+            const newImage = imgData.images[baselineCount]  // primeira nova
+            const usedFlowUrls = new Set(
+              imagesRef.current.map(s => s.flowUrl).filter((u): u is string => !!u)
+            )
+            const originalSrc = newImage.originalSrc || newImage.src
+            
+            if (!usedFlowUrls.has(originalSrc)) {
+              setImages(prev => prev.map(s => s.id === id ? {
+                ...s,
+                url: newImage.base64 || newImage.src,
+                flowUrl: originalSrc,
+                status: 'pending',
+                progress: 100,
+                note: '✅ Refeita · Aprovar/Reprovar'
+              } : s))
+              assigned = true
+              setImageNotice(`✅ Imagem ${slot.variant} da cena ${slot.sceneNumber} refeita!`)
+              break
+            }
+          }
+        } catch {}
+      }
+      
+      if (!assigned) {
+        setImages(prev => prev.map(s => s.id === id ? {
+          ...s, status: 'pending', progress: 0, note: '⚠️ Refação não detectada (tente novamente)'
+        } : s))
+        setImageNotice(`⚠️ Refação não detectada — verifique o Flow`)
+      }
+    } catch (err: any) {
+      setImageNotice(`⚠️ Erro ao refazer: ${err.message}`)
+      setImages(prev => prev.map(s => s.id === id ? {
+        ...s, status: 'pending', progress: 0, note: 'Erro ao refazer'
+      } : s))
+    }
   }
   const approveAllImages = () => {
     setLoading(prev => ({ ...prev, approveAllImages:true }))
@@ -655,8 +1099,8 @@ export default function App() {
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
       <div style={styles.container}>
         <div style={styles.hero}>
-          <h1 style={styles.title}>DarkPlanner V5.3.8-MODEL-POPUP-POSITION-ONLY</h1>
-          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.3.8-MODEL-POPUP-POSITION-ONLY</div>
+          <h1 style={styles.title}>DarkPlanner V5.5.9</h1>
+          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.5.9 - Debug Massivo</div>
           <div style={styles.sub}>Rollback seguro da V4.8. Mantém a base anterior sem o diagnóstico que causou erro de contexto.</div>
 
           <div style={styles.serviceRow}>
@@ -828,22 +1272,42 @@ export default function App() {
                     <option value="Imagem 4">Imagem 4</option>
                   </select>
                 </div>
+                
+                {/* V5.4.0 - SISTEMA DE AMPLITUDE */}
+                <div style={{ ...styles.row2, marginTop: 14, padding: 12, background: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.3)', borderRadius: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: '#22c55e', marginBottom: 6 }}>🔗 Amplitude (Imagens de Referência)</div>
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                      Quantas cenas anteriores usar como referência. Ex: amplitude=2 → cena 5 usa imagens das cenas 3 e 4.
+                    </div>
+                  </div>
+                  <select style={styles.input} value={String(amplitude)} onChange={(e)=>setAmplitude(Number(e.target.value))}>
+                    <option value="0">❌ Desativado</option>
+                    <option value="1">1 cena anterior</option>
+                    <option value="2">2 cenas anteriores</option>
+                    <option value="3">3 cenas anteriores</option>
+                    <option value="5">5 cenas anteriores</option>
+                    <option value="10">10 cenas anteriores</option>
+                    <option value="999">Todas as cenas anteriores</option>
+                  </select>
+                </div>
+                
                 <div style={{ ...styles.row3, marginTop: 14 }}>
-                  <button style={styles.btnPrimary} onClick={startImages} disabled={!parsed.scenes?.length || loading.startImages}>
-                    {loading.startImages ? <Spinner /> : null}Start
-                  </button>
-                  <button style={styles.btnSecondary} onClick={() => openService('flow')} disabled={loading.openFlow}>
+                  {!isGenerating ? (
+                    <button style={styles.btnPrimary} onClick={startImages} disabled={!parsed.scenes?.length || loading.startImages}>
+                      {loading.startImages ? <Spinner /> : null}🚀 Start
+                    </button>
+                  ) : (
+                    <button style={{ ...styles.btnPrimary, background: '#dc2626' }} onClick={stopImages}>
+                      🛑 Stop
+                    </button>
+                  )}
+                  <button style={styles.btnSecondary} onClick={() => openService('flow')} disabled={loading.openFlow || isGenerating}>
                     {loading.openFlow ? <Spinner /> : null}Abrir Flow
                   </button>
-                  <button style={styles.btnSecondary} onClick={openNewProjectOnly} disabled={loading.openNewProject}>
-                    {loading.openNewProject ? <Spinner /> : null}Testar Novo projeto
+                  <button style={styles.btnSecondary} onClick={openNewProjectOnly} disabled={loading.openNewProject || isGenerating}>
+                    {loading.openNewProject ? <Spinner /> : null}Novo projeto
                   </button>
-                </div>
-                <div style={{ ...styles.row2, marginTop: 12 }}>
-                  <button style={styles.btnSecondary} onClick={testFlowModelSelect538} disabled={loading.testModelSelect538}>
-                    {loading.testModelSelect538 ? <Spinner /> : null}TESTAR MODELO V5.3.8-MODEL-POPUP-POSITION-ONLY
-                  </button>
-                  <div style={styles.statusBox}>Escolha a proporção no seletor acima. Depois use 'Testar quantidade'. Esta versão abre chip, marca Imagem e tenta selecionar a proporção.</div>
                 </div>
                 <div style={{ ...styles.row2, marginTop: 12 }}>
                   <button style={styles.btnSuccess} onClick={approveAllImages} disabled={!images.some(x=>x.url) || loading.approveAllImages}>
@@ -876,8 +1340,36 @@ export default function App() {
                             const slot = slots.find(s => s.id === id)
                             return (
                               <div key={id} style={{ border:'1px solid rgba(255,255,255,0.08)', borderRadius:14, overflow:'hidden', background:'#091018' }}>
-                                <div style={{ minHeight:220, display:'grid', placeItems:'center' }}>
-                                  {slot?.url ? <img src={slot.url} alt={`Cena ${scene.number} imagem ${variant}`} style={{ width:'100%', display:'block', objectFit:'cover' }} /> : <div style={{ padding:16, color:'#93a4b8', textAlign:'center' }}>Cena {scene.number} · Imagem {variant}</div>}
+                                <div style={{ 
+                                  aspectRatio: imageSettings.orientation.replace(':', '/'),
+                                  width: '100%',
+                                  display:'flex', 
+                                  alignItems:'center', 
+                                  justifyContent:'center',
+                                  background: '#0a1424',
+                                  position: 'relative',
+                                  overflow: 'hidden'
+                                }}>
+                                  {slot?.url ? (
+                                    <img 
+                                      src={slot.url} 
+                                      alt={`Cena ${scene.number} imagem ${variant}`} 
+                                      style={{ 
+                                        width:'100%', 
+                                        height:'100%',
+                                        display:'block', 
+                                        objectFit:'cover'
+                                      }}
+                                      onError={(e) => {
+                                        (e.target as HTMLImageElement).style.display = 'none'
+                                      }}
+                                    />
+                                  ) : (
+                                    <div style={{ padding:16, color:'#93a4b8', textAlign:'center', fontSize:13 }}>
+                                      Cena {scene.number} · Imagem {variant}
+                                      <div style={{fontSize:11, color:'#5a6878', marginTop:6}}>{imageSettings.orientation}</div>
+                                    </div>
+                                  )}
                                 </div>
                                 <div style={{ padding:12 }}>
                                   <div style={{ fontWeight:700 }}>Imagem {variant}</div>
@@ -890,10 +1382,11 @@ export default function App() {
                                   ) : null}
                                 </div>
                                 <div style={styles.mediaActions}>
-                                  <button style={styles.btnWarn} onClick={() => retryImage(id)} disabled={slot?.status === 'locked'}>↻ Refazer</button>
-                                  <button style={styles.btnSecondary} onClick={() => imageFileRefs.current[id]?.click()} disabled={slot?.status === 'locked'}>Enviar imagem</button>
+                                  <button style={styles.btnWarn} onClick={() => retryImage(id)} disabled={slot?.status === 'locked' || slot?.status === 'approved'}>↻ Refazer</button>
+                                  <button style={styles.btnSecondary} onClick={() => imageFileRefs.current[id]?.click()} disabled={slot?.status === 'locked'}>Enviar</button>
                                   <input type="file" accept="image/*" style={styles.fileInput} ref={(el)=>{imageFileRefs.current[id]=el}} onChange={(e)=>handleUploadImage(id, e.target.files?.[0] || null)} />
-                                  <button style={styles.btnSuccess} disabled={slot?.status !== 'uploaded'} onClick={() => approveImage(id)}>Aprovar</button>
+                                  <button style={styles.btnSuccess} disabled={!slot?.url || slot?.status === 'approved' || slot?.status === 'rejected'} onClick={() => approveImage(id)}>✅ Aprovar</button>
+                                  <button style={{ ...styles.btnWarn, background: '#dc2626' }} disabled={!slot?.url || slot?.status === 'approved' || slot?.status === 'rejected'} onClick={() => rejectImage(id)}>❌ Reprovar</button>
                                 </div>
                               </div>
                             )

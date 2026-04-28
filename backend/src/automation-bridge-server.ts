@@ -1811,6 +1811,164 @@ app.get('/conversation', async (_req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// V5.4.0 - NOVOS ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /flow-progress
+ * Retorna progresso atual de geração de imagens no Flow
+ * Útil para barra de progresso em tempo real
+ */
+app.get('/flow-progress', async (_req, res) => {
+  try {
+    const result = await (bridge as any).getFlowGenerationProgress();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * GET /flow-images
+ * Retorna URLs de todas as imagens geradas no Flow
+ */
+app.get('/flow-images', async (_req, res) => {
+  try {
+    const result = await (bridge as any).getFlowGeneratedImages();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * V5.5.9 - GET /flow-debug-images
+ * DEBUG: lista TODAS as imagens da página (sem filtro)
+ * Útil quando getFlowGeneratedImages retorna vazio mas há imagens visíveis
+ */
+app.get('/flow-debug-images', async (_req, res) => {
+  try {
+    const result = await (bridge as any).debugAllFlowImages();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /flow-delete-image
+ * Deleta/Reprova uma imagem do Flow
+ * Body: { imageIndex: number } OU { imageUrl: string }
+ */
+app.post('/flow-delete-image', async (req, res) => {
+  try {
+    const { imageIndex, imageUrl } = req.body;
+    let result;
+    
+    if (imageUrl) {
+      // V5.5.1: Preferir URL específica
+      result = await (bridge as any).deleteFlowImageByUrl(imageUrl);
+    } else if (typeof imageIndex === 'number') {
+      result = await (bridge as any).deleteFlowImage(imageIndex);
+    } else {
+      throw new Error('imageIndex ou imageUrl deve ser fornecido');
+    }
+    
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * V5.5.1 - POST /flow-set-references-by-urls
+ * AMPLITUDE INTELIGENTE: usa URLs específicas das imagens APROVADAS
+ * Body: { imageUrls: string[] }
+ */
+app.post('/flow-set-references-by-urls', async (req, res) => {
+  try {
+    const { imageUrls } = req.body;
+    if (!Array.isArray(imageUrls)) throw new Error('imageUrls deve ser array');
+    const result = await (bridge as any).setReferenceImagesByUrls(imageUrls);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * V5.5.9 - POST /flow-set-references-by-position
+ * AMPLITUDE PELO MÉTODO DOS 3 PONTINHOS (Incluir no comando)
+ * Body: { sceneNumbers: number[], perScene: number, approvedVariants?: { [sceneNum]: variant } }
+ */
+app.post('/flow-set-references-by-position', async (req, res) => {
+  try {
+    const { sceneNumbers, perScene, approvedVariants } = req.body;
+    if (!Array.isArray(sceneNumbers)) throw new Error('sceneNumbers deve ser array');
+    if (typeof perScene !== 'number') throw new Error('perScene deve ser número');
+    const result = await (bridge as any).setReferenceImagesByPosition({ sceneNumbers, perScene, approvedVariants });
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /flow-approve-image
+ * Aprova uma imagem (marca como aprovada no sistema)
+ * Body: { imageIndex: number, sceneNumber: number }
+ */
+app.post('/flow-approve-image', async (req, res) => {
+  try {
+    const { imageIndex, sceneNumber } = req.body;
+    const result = await (bridge as any).approveImage(imageIndex, sceneNumber);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /flow-set-references
+ * AMPLITUDE: Define imagens das cenas anteriores como referência
+ * Body: { sceneNumbers: number[] }
+ * Exemplo: { sceneNumbers: [1, 2] } usa cenas 1 e 2 como referência
+ */
+app.post('/flow-set-references', async (req, res) => {
+  try {
+    const { sceneNumbers } = req.body;
+    if (!Array.isArray(sceneNumbers)) throw new Error('sceneNumbers deve ser array');
+    const result = await (bridge as any).setReferenceImages(sceneNumbers);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * GET /version
+ * Retorna versão atual do sistema
+ */
+app.get('/version', async (_req, res) => {
+  res.json({ 
+    ok: true, 
+    version: 'V5.5.9', 
+    name: 'DarkPlanner V5.5.9 - Debug Massivo',
+    features: [
+      '🚀 Mantém mesmo projeto entre cenas (não volta pra home!)',
+      '🛑 Botão Stop para pausar geração',
+      '🖼️ Imagens do Flow aparecem no DarkPlanner em tempo real',
+      '✅ Aprovar/Reprovar funcional - rastreia URL específica',
+      '🔗 Amplitude inteligente: usa apenas a imagem APROVADA como referência',
+      '🗑️ Reprovar deleta a imagem específica do Flow',
+      '🐛 Status de login corrigido (ChatGPT/Flow/Grok)',
+      '🧹 Removidos botões de teste'
+    ]
+  });
+});
+
 app.listen(3017, () => {
-  console.log('🚀 DarkPlanner V2 Bugfix backend em http://localhost:3017');
+  console.log('🚀 DarkPlanner V5.5.9 backend em http://localhost:3017');
+  console.log('✨ Production-ready: amplitude inteligente + stop + imagens em tempo real');
 });
