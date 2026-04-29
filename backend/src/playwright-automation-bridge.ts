@@ -1366,10 +1366,373 @@ export class AutomationBridge {
 
   /**
    * Aprovar imagem - apenas marca como aprovada (não faz nada no Flow)
-   * As imagens aprovadas ficam no sistema para usar como referência
    */
   async approveImage(imageIndex: number, sceneNumber: number) {
     return { ok: true, approved: true, imageIndex, sceneNumber, timestamp: new Date().toISOString() };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // V5.6.0 - SISTEMA DE REFERÊNCIAS POR DOWNLOAD + UPLOAD
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Cria pasta do projeto para salvar imagens
+   * Retorna o caminho criado
+   */
+  async createProjectDir(basePath: string, projectName?: string) {
+    const name = projectName || `video_${Date.now()}`;
+    const projectDir = path.join(basePath, 'projetos', name);
+    const imgDir = path.join(projectDir, 'imagens');
+    const vidDir = path.join(projectDir, 'videos');
+    
+    fs.mkdirSync(imgDir, { recursive: true });
+    fs.mkdirSync(vidDir, { recursive: true });
+    
+    return { ok: true, projectDir, imgDir, vidDir, name };
+  }
+
+  /**
+   * Salva uma imagem (base64 ou URL do Flow) no disco
+   * @param base64Data string data:image/png;base64,... OU URL pra buscar do Flow
+   * @param fileName ex: "cena_01_v1.png"
+   * @param saveDir pasta destino
+   */
+  async saveImageToDisk(base64Data: string, fileName: string, saveDir: string) {
+    try {
+      fs.mkdirSync(saveDir, { recursive: true });
+      const filePath = path.join(saveDir, fileName);
+      
+      let buffer: Buffer;
+      
+      if (base64Data.startsWith('data:image')) {
+        // Já é base64 — extrai os bytes
+        const base64Content = base64Data.split(',')[1];
+        buffer = Buffer.from(base64Content, 'base64');
+      } else if (base64Data.startsWith('http')) {
+        // É URL — precisa buscar do contexto do Flow via Playwright
+        const page = this.pages.flow;
+        if (!page) return { ok: false, error: 'Flow não está aberto' };
+        
+        const b64 = await page.evaluate(async (url: string) => {
+          try {
+            const resp = await fetch(url);
+            const blob = await resp.blob();
+            return await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+          } catch { return ''; }
+        }, base64Data);
+        
+        if (!b64) return { ok: false, error: 'Falha ao baixar imagem do Flow' };
+        
+        const content = b64.split(',')[1];
+        buffer = Buffer.from(content, 'base64');
+      } else {
+        return { ok: false, error: 'Formato não reconhecido (nem base64 nem URL)' };
+      }
+      
+      fs.writeFileSync(filePath, buffer);
+      
+      return { 
+        ok: true, 
+        filePath, 
+        fileName,
+        sizeKB: Math.round(buffer.length / 1024)
+      };
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  }
+
+  /**
+   * V5.6.0 - Upload de imagem local como referência no Flow
+   * 
+   * Fluxo descoberto via inspeção DOM ao vivo:
+   *   1. Clica "+" (textContent === "add_2Criar") → abre dialog
+   *   2. Dialog tem "Faça upload de uma imagem" com input[type="file"]
+   *   3. Playwright usa setInputFiles() pra enviar o arquivo
+   *   4. Dialog fecha, imagem aparece como thumb de referência no composer
+   */
+  async uploadImageAsReference(filePath: string) {
+    const page = this.pages.flow;
+    if (!page) return { ok: false, error: 'Flow não está aberto', notes: [] };
+    
+    const notes: string[] = [];
+    
+    try {
+      // Verifica se o arquivo existe
+      if (!fs.existsSync(filePath)) {
+        return { ok: false, error: `Arquivo não existe: ${filePath}`, notes };
+      }
+      
+      notes.push(`Arquivo: ${path.basename(filePath)} (${Math.round(fs.statSync(filePath).size / 1024)}KB)`);
+      
+      // 1. Clica no botão "+" (add_2Criar)
+      const plusClicked = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const plus = btns.find(b => {
+          const t = (b.textContent || '').trim();
+          return t === 'add_2Criar' || t === 'add_2';
+        });
+        if (plus) { (plus as HTMLElement).click(); return true; }
+        return false;
+      });
+      
+      if (!plusClicked) {
+        notes.push('Botão "+" (add_2Criar) não encontrado');
+        return { ok: false, error: 'Botão + não encontrado', notes };
+      }
+      
+      notes.push('Botão "+" clicado');
+      await page.waitForTimeout(1500);
+      
+      // 2. Verifica se dialog abriu
+      const dialogOpen = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));
+      if (!dialogOpen) {
+        notes.push('Dialog não abriu após clicar "+"');
+        return { ok: false, error: 'Dialog não abriu', notes };
+      }
+      
+      notes.push('Dialog abriu');
+      
+      // 3. Procura input[type="file"] dentro do dialog (pode estar hidden)
+      // O Flow tem "Faça upload de uma imagem" que provavelmente tem um input file
+      
+      // Estratégia A: input[type="file"] direto no dialog
+      let fileInput = page.locator('[role="dialog"] input[type="file"]');
+      let inputCount = await fileInput.count();
+      
+      if (inputCount === 0) {
+        // Estratégia B: input[type="file"] em QUALQUER lugar da página
+        fileInput = page.locator('input[type="file"]');
+        inputCount = await fileInput.count();
+        notes.push(`input[type="file"] global: ${inputCount} encontrado(s)`);
+      } else {
+        notes.push(`input[type="file"] no dialog: ${inputCount} encontrado(s)`);
+      }
+      
+      if (inputCount === 0) {
+        // Estratégia C: Clica no texto "Faça upload" pra revelar o input
+        const uploadTextClicked = await page.evaluate(() => {
+          const all = Array.from(document.querySelectorAll('*'));
+          const target = all.find(el => {
+            const t = (el.textContent || '').trim().toLowerCase();
+            return (t.includes('upload') || t.includes('enviar')) && t.length < 60;
+          });
+          if (target) { (target as HTMLElement).click(); return true; }
+          return false;
+        });
+        
+        if (uploadTextClicked) {
+          notes.push('Clicou em texto "upload"');
+          await page.waitForTimeout(800);
+          fileInput = page.locator('input[type="file"]');
+          inputCount = await fileInput.count();
+          notes.push(`input[type="file"] após click upload: ${inputCount}`);
+        }
+      }
+      
+      if (inputCount === 0) {
+        // Última tentativa: procura qualquer input que aceite arquivo
+        fileInput = page.locator('input[accept*="image"]');
+        inputCount = await fileInput.count();
+        notes.push(`input[accept=image]: ${inputCount}`);
+      }
+      
+      if (inputCount === 0) {
+        await page.keyboard.press('Escape').catch(() => {});
+        notes.push('NENHUM input[type="file"] encontrado!');
+        
+        // Debug: lista todos os inputs da página
+        const allInputs = await page.evaluate(() => {
+          return Array.from(document.querySelectorAll('input')).map(i => ({
+            type: i.type,
+            accept: i.accept,
+            name: i.name,
+            id: i.id,
+            hidden: i.hidden || getComputedStyle(i).display === 'none',
+          }));
+        });
+        notes.push(`Debug inputs: ${JSON.stringify(allInputs).slice(0, 200)}`);
+        
+        return { ok: false, error: 'input[type="file"] não encontrado', notes };
+      }
+      
+      // 4. Faz upload via setInputFiles
+      notes.push(`Fazendo upload via setInputFiles...`);
+      await fileInput.first().setInputFiles(filePath);
+      
+      await page.waitForTimeout(2000);
+      
+      // 5. Verifica se a referência apareceu no composer
+      const refsInComposer = await page.evaluate(() => {
+        const cancelBtns = Array.from(document.querySelectorAll('button')).filter(b => 
+          (b.textContent || '').trim() === 'cancel'
+        );
+        return cancelBtns.filter(b => {
+          const r = b.getBoundingClientRect();
+          return r.top > 700;
+        }).length;
+      });
+      
+      // Fecha dialog se ainda estiver aberto
+      const stillOpen = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));
+      if (stillOpen) {
+        await page.keyboard.press('Escape').catch(() => {});
+        notes.push('Dialog fechado via Escape');
+      }
+      
+      notes.push(`Composer tem ${refsInComposer} referência(s)`);
+      
+      return { 
+        ok: refsInComposer > 0, 
+        included: refsInComposer, 
+        filePath,
+        notes, 
+        method: 'upload-file' 
+      };
+    } catch (err: any) {
+      try { await page.keyboard.press('Escape'); } catch {}
+      return { ok: false, error: String(err?.message || err), notes };
+    }
+  }
+
+  /**
+   * V5.6.0 - Deleta TODAS as imagens do Flow EXCETO as dos índices informados
+   * @param keepIndices Índices das imagens a manter (0-based, na ordem top-to-bottom)
+   */
+  async deleteFlowImagesExcept(keepIndices: number[]) {
+    const page = this.pages.flow;
+    if (!page) return { ok: false, error: 'Flow não está aberto', notes: [] };
+    
+    const notes: string[] = [];
+    
+    try {
+      // Pega todas as imagens geradas
+      const allImages = await page.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll('img'));
+        return imgs
+          .filter(i => {
+            const src = (i as HTMLImageElement).src;
+            const nw = (i as HTMLImageElement).naturalWidth;
+            return nw >= 512 && (
+              src.includes('media.getMediaUrlRedirect') ||
+              src.startsWith('blob:') ||
+              src.includes('googleusercontent')
+            );
+          })
+          .map((i, idx) => {
+            const r = i.getBoundingClientRect();
+            return {
+              idx,
+              src: (i as HTMLImageElement).src,
+              centerX: r.left + r.width / 2,
+              centerY: r.top + r.height / 2,
+            };
+          });
+      });
+      
+      notes.push(`Total imagens no Flow: ${allImages.length}`);
+      notes.push(`Mantendo índices: [${keepIndices.join(', ')}]`);
+      
+      let deleted = 0;
+      
+      // Deleta as que NÃO estão em keepIndices (de trás pra frente pra não mudar índices)
+      for (let i = allImages.length - 1; i >= 0; i--) {
+        if (keepIndices.includes(i)) continue;
+        
+        const img = allImages[i];
+        
+        try {
+          // Hover na imagem
+          await page.mouse.move(img.centerX, img.centerY);
+          await page.waitForTimeout(500);
+          
+          // Dispara hover events
+          await page.evaluate((info) => {
+            const el = document.elementFromPoint(info.centerX, info.centerY);
+            if (el) {
+              ['mouseenter', 'mouseover', 'pointerenter'].forEach(ev => {
+                el.dispatchEvent(new MouseEvent(ev, {
+                  bubbles: true, clientX: info.centerX, clientY: info.centerY
+                }));
+              });
+            }
+          }, img);
+          
+          await page.waitForTimeout(600);
+          
+          // Clica nos 3 pontinhos
+          const moreClicked = await page.evaluate((info) => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const more = btns.filter(b => {
+              const t = (b.textContent || '').trim().toLowerCase();
+              return /more_vert|more_horiz|mais opç/.test(t);
+            });
+            if (more.length === 0) return false;
+            more.sort((a, b) => {
+              const ra = a.getBoundingClientRect();
+              const rb = b.getBoundingClientRect();
+              return Math.hypot(ra.left - info.centerX, ra.top - info.centerY) -
+                     Math.hypot(rb.left - info.centerX, rb.top - info.centerY);
+            });
+            (more[0] as HTMLElement).click();
+            return true;
+          }, img);
+          
+          if (!moreClicked) {
+            notes.push(`[${i}] more_vert não encontrado`);
+            continue;
+          }
+          
+          await page.waitForTimeout(800);
+          
+          // Procura "Archive" ou "Excluir" ou "Delete" no menu
+          const deleteClicked = await page.evaluate(() => {
+            const all = Array.from(document.querySelectorAll('button, [role="menuitem"], li, div, span'));
+            const target = all.find(el => {
+              const t = (el.textContent || '').trim().toLowerCase();
+              return t.length < 40 && (/archive|excluir|delete|remover|apagar/.test(t));
+            });
+            if (target) { (target as HTMLElement).click(); return true; }
+            return false;
+          });
+          
+          if (deleteClicked) {
+            deleted++;
+            await page.waitForTimeout(800);
+            
+            // Confirma se aparecer modal de confirmação
+            await page.evaluate(() => {
+              const btns = Array.from(document.querySelectorAll('button'));
+              const confirm = btns.find(b => {
+                const t = (b.textContent || '').trim().toLowerCase();
+                return /confirmar|sim|yes|ok|confirm/.test(t);
+              });
+              if (confirm) (confirm as HTMLElement).click();
+            });
+            
+            await page.waitForTimeout(500);
+          } else {
+            // Fecha menu
+            await page.keyboard.press('Escape').catch(() => {});
+            notes.push(`[${i}] opção de excluir não encontrada no menu`);
+          }
+        } catch (e) {
+          notes.push(`[${i}] erro: ${String(e).slice(0, 50)}`);
+          await page.keyboard.press('Escape').catch(() => {});
+        }
+      }
+      
+      notes.push(`Deletadas: ${deleted}/${allImages.length - keepIndices.length}`);
+      
+      return { ok: deleted > 0, deleted, notes };
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err), notes };
+    }
   }
 
   

@@ -1943,6 +1943,74 @@ app.post('/flow-approve-image', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// V5.6.0 - SISTEMA DE REFERÊNCIAS POR DOWNLOAD + UPLOAD
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /project/create
+ * Cria pasta do projeto para salvar imagens
+ * Body: { basePath: string, projectName?: string }
+ */
+app.post('/project/create', async (req, res) => {
+  try {
+    const { basePath, projectName } = req.body;
+    if (!basePath) throw new Error('basePath é obrigatório');
+    const result = await (bridge as any).createProjectDir(basePath, projectName);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /project/save-image
+ * Salva imagem no disco (base64 ou URL do Flow)
+ * Body: { base64Data: string, fileName: string, saveDir: string }
+ */
+app.post('/project/save-image', async (req, res) => {
+  try {
+    const { base64Data, fileName, saveDir } = req.body;
+    if (!base64Data || !fileName || !saveDir) throw new Error('base64Data, fileName e saveDir são obrigatórios');
+    const result = await (bridge as any).saveImageToDisk(base64Data, fileName, saveDir);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /flow-upload-reference
+ * Upload de imagem local como referência no Flow
+ * Body: { filePath: string }
+ */
+app.post('/flow-upload-reference', async (req, res) => {
+  try {
+    const { filePath } = req.body;
+    if (!filePath) throw new Error('filePath é obrigatório');
+    const result = await (bridge as any).uploadImageAsReference(filePath);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
+/**
+ * POST /flow-delete-except
+ * Deleta todas as imagens do Flow EXCETO as dos índices informados
+ * Body: { keepIndices: number[] }
+ */
+app.post('/flow-delete-except', async (req, res) => {
+  try {
+    const { keepIndices } = req.body;
+    if (!Array.isArray(keepIndices)) throw new Error('keepIndices deve ser array');
+    const result = await (bridge as any).deleteFlowImagesExcept(keepIndices);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.json({ ok: false, error: String(err?.message || err) });
+  }
+});
+
 /**
  * POST /flow-set-references
  * AMPLITUDE: Define imagens das cenas anteriores como referência

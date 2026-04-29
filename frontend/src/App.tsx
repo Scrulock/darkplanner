@@ -497,6 +497,10 @@ export default function App() {
   const approvalResolveRef = useRef<(() => void) | null>(null)
   const [waitingApprovalScene, setWaitingApprovalScene] = useState<number>(0) // 0 = não esperando
   
+  // V5.6.0 - Pasta do projeto para salvar imagens
+  const [projectImgDir, setProjectImgDir] = useState<string>('')
+  const projectBasePath = 'C:\\Users\\Dorielson\\Videos\\MEU PROJETO'
+  
   // V5.5.1 - Ref para acessar o estado atual de imagens (evita stale closure)
   const imagesRef = useRef<ImageItem[]>([])
   useEffect(() => {
@@ -529,6 +533,20 @@ export default function App() {
       await new Promise(r => setTimeout(r, 2000))
     } catch (e: any) {
       setImageNotice(`⚠️ Falha ao abrir novo projeto: ${e.message}`)
+    }
+    
+    // V5.6.0 - Cria pasta do projeto para salvar imagens
+    let imgDir = ''
+    try {
+      const projResult = await apiRequest('/project/create', {
+        method: 'POST',
+        body: JSON.stringify({ basePath: projectBasePath })
+      })
+      imgDir = projResult.imgDir || ''
+      setProjectImgDir(imgDir)
+      setImageNotice(`📁 Projeto criado: ${projResult.name}`)
+    } catch (e: any) {
+      setImageNotice(`⚠️ Erro ao criar pasta do projeto: ${e.message}`)
     }
     
     const queue: ImageItem[] = []
@@ -566,22 +584,41 @@ export default function App() {
         ))
         await advanceProgressForScene(scene.number)
         
-        // V5.6.0 - AMPLITUDE: adiciona TODAS as imagens aprovadas do Flow como referência
-        // Como as reprovadas já foram deletadas, clicar "+" e selecionar tudo = só as aprovadas
-        if (amplitude > 0 && index > 0) {
-          setImageNotice(`🔗 Adicionando referências aprovadas ao comando...`)
-          try {
-            const refResult = await apiRequest('/flow-add-all-references', { method: 'POST' })
-            const refNotes = Array.isArray(refResult?.notes) ? refResult.notes.join(' | ') : ''
-            if (refResult?.ok) {
-              setImageNotice(`✅ ${refResult.included || 0} ref(s) adicionada(s) | ${refNotes}`)
-            } else {
-              setImageNotice(`⚠️ Refs falhou: ${refNotes || refResult?.error || '?'}`)
+        // V5.6.0 - AMPLITUDE: faz UPLOAD das imagens aprovadas anteriores como referência
+        if (amplitude > 0 && index > 0 && imgDir) {
+          setImageNotice(`🔗 Enviando imagens aprovadas como referência...`)
+          
+          // Procura arquivos _aprovada.png na pasta de imagens
+          let uploadCount = 0
+          for (let s = 1; s < scene.number; s++) {
+            const fileName = `cena_${String(s).padStart(2, '0')}_aprovada.png`
+            const filePath = imgDir.replace(/\\/g, '/') + '/' + fileName
+            // Tenta converter pra caminho Windows se necessário
+            const winPath = imgDir + '\\' + fileName
+            
+            try {
+              const uploadResult = await apiRequest('/flow-upload-reference', {
+                method: 'POST',
+                body: JSON.stringify({ filePath: winPath })
+              })
+              const uploadNotes = Array.isArray(uploadResult?.notes) ? uploadResult.notes.join(' | ') : ''
+              if (uploadResult?.ok) {
+                uploadCount++
+                setImageNotice(`✅ Cena ${s} enviada como ref [${uploadCount} total] | ${uploadNotes}`)
+              } else {
+                setImageNotice(`⚠️ Falha ref cena ${s}: ${uploadNotes}`)
+              }
+              await new Promise(r => setTimeout(r, 800))
+            } catch (e: any) {
+              // Arquivo pode não existir se cena anterior não foi aprovada
+              setImageNotice(`ℹ️ Ref cena ${s} não disponível: ${e.message}`)
             }
-            await new Promise(r => setTimeout(r, 1000))
-          } catch (e: any) {
-            setImageNotice(`⚠️ Erro refs: ${e.message}`)
           }
+          
+          if (uploadCount > 0) {
+            setImageNotice(`✅ ${uploadCount} referência(s) enviada(s) ao Flow`)
+          }
+          await new Promise(r => setTimeout(r, 500))
         }
         
         // V5.5.0 - Indica se é a primeira cena (para abrir Novo projeto)
@@ -673,6 +710,21 @@ export default function App() {
               ).length
               imagesAssignedForScene = filledNow
               setImageNotice(`📸 Cena ${scene.number}: ${imagesAssignedForScene}/${expectedImages} imagens recebidas`)
+              
+              // V5.6.0 - Salva imagens no disco automaticamente
+              if (imgDir) {
+                for (const img of newImages) {
+                  const b64 = img.base64 || img.src
+                  if (!b64) continue
+                  const fileName = `cena_${String(scene.number).padStart(2, '0')}_v${newImages.indexOf(img) + 1}.png`
+                  try {
+                    await apiRequest('/project/save-image', {
+                      method: 'POST',
+                      body: JSON.stringify({ base64Data: b64, fileName, saveDir: imgDir })
+                    })
+                  } catch {}
+                }
+              }
             }
             
             // V5.6.0 - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
@@ -870,7 +922,25 @@ export default function App() {
       }
     }
     
-    setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada. ${otherVariants.length} variante(s) deletada(s) do Flow.`)
+    setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada. ${otherVariants.length} variante(s) descartada(s).`)
+    
+    // V5.6.0 - Salva imagem aprovada com nome definitivo no disco
+    if (projectImgDir && slot.url) {
+      const approvedFileName = `cena_${String(slot.sceneNumber).padStart(2, '0')}_aprovada.png`
+      try {
+        await apiRequest('/project/save-image', {
+          method: 'POST',
+          body: JSON.stringify({
+            base64Data: slot.url,
+            fileName: approvedFileName,
+            saveDir: projectImgDir
+          })
+        })
+        setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada e salva: ${approvedFileName}`)
+      } catch (e: any) {
+        setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada (erro ao salvar: ${e.message})`)
+      }
+    }
     
     // V5.6.0 - Se está esperando aprovação, RESUME o loop de geração
     if (approvalResolveRef.current && waitingApprovalScene === slot.sceneNumber) {
