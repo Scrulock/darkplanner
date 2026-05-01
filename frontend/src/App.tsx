@@ -493,11 +493,11 @@ export default function App() {
   const stopRequestedRef = useRef(false)
   const [isGenerating, setIsGenerating] = useState(false)
   
-  // V5.6.3-BEST-REFERENCE-HYBRID - Amplitude: pausa entre cenas esperando aprovação
+  // V5.6.4-FIX-413-PAYLOAD-LIMIT - Amplitude: pausa entre cenas esperando aprovação
   const approvalResolveRef = useRef<(() => void) | null>(null)
   const [waitingApprovalScene, setWaitingApprovalScene] = useState<number>(0) // 0 = não esperando
   
-  // V5.6.3-BEST-REFERENCE-HYBRID - Pasta do projeto para salvar imagens
+  // V5.6.4-FIX-413-PAYLOAD-LIMIT - Pasta do projeto para salvar imagens
   const [projectImgDir, setProjectImgDir] = useState<string>('')
   const projectImgDirRef = useRef<string>('')
   const projectBasePath = ''
@@ -520,13 +520,13 @@ export default function App() {
     setLoading(prev => ({ ...prev, startImages:true }))
     setImageNotice('🚀 Iniciando geração para todas as cenas...')
     
-    // V5.6.3-BEST-REFERENCE-HYBRID - WARMUP: garante que o Flow está aberto (resolve bug "1ª vez não funciona")
+    // V5.6.4-FIX-413-PAYLOAD-LIMIT - WARMUP: garante que o Flow está aberto (resolve bug "1ª vez não funciona")
     try {
       await apiRequest('/service-status?name=flow', { method: 'GET' })
       await new Promise(r => setTimeout(r, 500))
     } catch {}
     
-    // V5.6.3-BEST-REFERENCE-HYBRID - FRESH START: TODA vez que clica Start, força abrir um NOVO PROJETO
+    // V5.6.4-FIX-413-PAYLOAD-LIMIT - FRESH START: TODA vez que clica Start, força abrir um NOVO PROJETO
     // (vai pra home do Flow e clica em "Novo projeto")
     setImageNotice('🆕 Abrindo novo projeto no Flow...')
     try {
@@ -536,7 +536,7 @@ export default function App() {
       setImageNotice(`⚠️ Falha ao abrir novo projeto: ${e.message}`)
     }
     
-    // V5.6.3-BEST-REFERENCE-HYBRID - Cria pasta do projeto para salvar imagens
+    // V5.6.4-FIX-413-PAYLOAD-LIMIT - Cria pasta do projeto para salvar imagens
     let imgDir = ''
     try {
       const projResult = await apiRequest('/project/create', {
@@ -577,7 +577,7 @@ export default function App() {
           break
         }
         
-        // V5.6.3-BEST-REFERENCE-HYBRID - FIX progresso da cena 2 começando em 100%:
+        // V5.6.4-FIX-413-PAYLOAD-LIMIT - FIX progresso da cena 2 começando em 100%:
         // Reset COMPLETO do progresso quando começa nova cena
         setImages(prev => prev.map(img => 
           img.sceneNumber === scene.number 
@@ -586,7 +586,7 @@ export default function App() {
         ))
         await advanceProgressForScene(scene.number)
         
-        // V5.6.3-BEST-REFERENCE-HYBRID - AMPLITUDE: faz UPLOAD das imagens aprovadas anteriores como referência
+        // V5.6.4-FIX-413-PAYLOAD-LIMIT - AMPLITUDE: faz UPLOAD das imagens aprovadas anteriores como referência
         if (amplitude > 0 && index > 0 && imgDir) {
           setImageNotice(`🔗 Enviando imagens aprovadas como referência...`)
           
@@ -649,7 +649,7 @@ export default function App() {
           note: noteDetail
         } : img))
         
-        // V5.6.3-BEST-REFERENCE-HYBRID - Aguarda imagens NOVAS serem geradas no Flow
+        // V5.6.4-FIX-413-PAYLOAD-LIMIT - Aguarda imagens NOVAS serem geradas no Flow
         // Progresso baseado em IMAGENS RECEBIDAS (não em texto % do Flow que dá ruído)
         setImageNotice(`⏳ Aguardando geração das imagens da cena ${scene.number}...`)
         const sceneStartTime = Date.now()
@@ -665,14 +665,14 @@ export default function App() {
         
         let imagesAssignedForScene = 0
         let lastImagesAssigned = -1
-        let stableLoops = 0  // V5.6.3-BEST-REFERENCE-HYBRID: detecta se ficou sem progresso por X polls
+        let stableLoops = 0  // V5.6.4-FIX-413-PAYLOAD-LIMIT: detecta se ficou sem progresso por X polls
         
         while (Date.now() - sceneStartTime < maxWaitMs && imagesAssignedForScene < expectedImages) {
           if (stopRequestedRef.current) break
           
           await new Promise(r => setTimeout(r, 2500))
           
-          // V5.6.3-BEST-REFERENCE-HYBRID - Tenta capturar imagens (ÚNICA fonte de progresso)
+          // V5.6.4-FIX-413-PAYLOAD-LIMIT - Tenta capturar imagens (ÚNICA fonte de progresso)
           try {
             const imgData = await apiRequest('/flow-images', { method: 'GET' })
             const totalImages = imgData.images?.length || 0
@@ -682,7 +682,7 @@ export default function App() {
               // Pega só as imagens NOVAS (geradas depois do baseline)
               const newImages = imgData.images.slice(baselineCount)
               
-              // V5.6.3-BEST-REFERENCE-HYBRID - DEDUPE no frontend: nunca atribui o mesmo originalSrc duas vezes
+              // V5.6.4-FIX-413-PAYLOAD-LIMIT - DEDUPE no frontend: nunca atribui o mesmo originalSrc duas vezes
               setImages(prev => {
                 const updated = [...prev]
                 const usedFlowUrls = new Set(
@@ -713,7 +713,7 @@ export default function App() {
               imagesAssignedForScene = filledNow
               setImageNotice(`📸 Cena ${scene.number}: ${imagesAssignedForScene}/${expectedImages} imagens recebidas`)
               
-              // V5.6.3-BEST-REFERENCE-HYBRID - Salva imagens no disco automaticamente
+              // V5.6.4-FIX-413-PAYLOAD-LIMIT - Salva imagens no disco automaticamente
               if (imgDir) {
                 for (const img of newImages) {
                   const b64 = img.base64 || img.src
@@ -724,12 +724,16 @@ export default function App() {
                       method: 'POST',
                       body: JSON.stringify({ base64Data: b64, fileName, saveDir: imgDir })
                     })
-                  } catch {}
+                    console.log(`[V5.6.4] Salvou ${fileName} no disco`)
+                  } catch (e: any) {
+                    console.error(`[V5.6.4] FALHA ao salvar ${fileName}:`, e.message)
+                    setImageNotice(`⚠️ Falha ao salvar ${fileName}: ${e.message}`)
+                  }
                 }
               }
             }
             
-            // V5.6.3-BEST-REFERENCE-HYBRID - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
+            // V5.6.4-FIX-413-PAYLOAD-LIMIT - PROGRESSO BASEADO EM IMAGENS RECEBIDAS (real, não fake)
             // 0 imgs = 10%, 1 = 32%, 2 = 55%, 3 = 78%, 4 = 100%
             const realProgress = imagesAssignedForScene === 0
               ? Math.min(85, 10 + Math.floor((Date.now() - sceneStartTime) / 1500))  // anima até 85%
@@ -742,7 +746,7 @@ export default function App() {
             ))
           } catch {}
           
-          // V5.6.3-BEST-REFERENCE-HYBRID - Detecção de stall: se não progride por 12 ciclos (30s), aborta polling
+          // V5.6.4-FIX-413-PAYLOAD-LIMIT - Detecção de stall: se não progride por 12 ciclos (30s), aborta polling
           if (imagesAssignedForScene === lastImagesAssigned) {
             stableLoops++
             if (stableLoops >= 12 && imagesAssignedForScene > 0) {
@@ -772,7 +776,7 @@ export default function App() {
           setImageNotice(`⚠️ Cena ${scene.number}: nenhuma imagem detectada.${debugInfo}`)
         }
         
-        // V5.6.3-BEST-REFERENCE-HYBRID - AMPLITUDE: PAUSA esperando aprovação do usuário
+        // V5.6.4-FIX-413-PAYLOAD-LIMIT - AMPLITUDE: PAUSA esperando aprovação do usuário
         if (amplitude > 0 && imagesAssignedForScene > 0 && !stopRequestedRef.current) {
           setImageNotice(`⏸️ Cena ${scene.number}: Aprove pelo menos 1 imagem para continuar. As reprovadas serão deletadas do Flow.`)
           setWaitingApprovalScene(scene.number)
@@ -948,7 +952,7 @@ export default function App() {
       setImageNotice(`✅ Cena ${slot.sceneNumber} aprovada, mas sem pasta/imagem para salvar. Pasta=${imgDirToUse || 'vazia'} img=${sourceImage ? 'ok' : 'vazia'}`)
     }
     
-    // V5.6.3-BEST-REFERENCE-HYBRID - Se está esperando aprovação, RESUME o loop de geração
+    // V5.6.4-FIX-413-PAYLOAD-LIMIT - Se está esperando aprovação, RESUME o loop de geração
     if (approvalResolveRef.current && waitingApprovalScene === slot.sceneNumber) {
       approvalResolveRef.current()
       approvalResolveRef.current = null
@@ -992,7 +996,7 @@ export default function App() {
       } : s))
     }
   }
-  // V5.6.3-BEST-REFERENCE-HYBRID - Refazer imagem: deleta no Flow, regenera no mesmo prompt
+  // V5.6.4-FIX-413-PAYLOAD-LIMIT - Refazer imagem: deleta no Flow, regenera no mesmo prompt
   const retryImage = async (id: string) => {
     const slot = imagesRef.current.find(s => s.id === id)
     if (!slot) return
@@ -1164,8 +1168,8 @@ export default function App() {
       <style>{`@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }`}</style>
       <div style={styles.container}>
         <div style={styles.hero}>
-          <h1 style={styles.title}>DarkPlanner V5.6.3-BEST-REFERENCE-HYBRID</h1>
-          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.6.3-BEST-REFERENCE-HYBRID</div>
+          <h1 style={styles.title}>DarkPlanner V5.6.4-FIX-413-PAYLOAD-LIMIT</h1>
+          <div style={{...styles.toastOk, marginTop: 12}}>VERSÃO ATIVA: V5.6.4-FIX-413-PAYLOAD-LIMIT</div>
           <div style={styles.sub}>Rollback seguro da V4.8. Mantém a base anterior sem o diagnóstico que causou erro de contexto.</div>
 
           <div style={styles.serviceRow}>
@@ -1338,7 +1342,7 @@ export default function App() {
                   </select>
                 </div>
                 
-                {/* V5.6.3-BEST-REFERENCE-HYBRID - AMPLITUDE ON/OFF */}
+                {/* V5.6.4-FIX-413-PAYLOAD-LIMIT - AMPLITUDE ON/OFF */}
                 <div style={{ ...styles.row2, marginTop: 14, padding: 12, background: amplitude ? 'rgba(34, 197, 94, 0.12)' : 'rgba(255,255,255,0.03)', border: `1px solid ${amplitude ? 'rgba(34, 197, 94, 0.4)' : 'rgba(255,255,255,0.08)'}`, borderRadius: 8 }}>
                   <div>
                     <div style={{ fontWeight: 700, color: amplitude ? '#22c55e' : '#94a3b8', marginBottom: 6 }}>🔗 Imagens de Referência</div>
