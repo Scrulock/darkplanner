@@ -1,6 +1,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
 import { AutomationBridge } from './playwright-automation-bridge.js';
 
 const app = express();
@@ -13,6 +14,11 @@ await bridge.init();
 
 app.get('/health', async (_req, res) => {
   res.json({ ok: true, mode: 'darkplanner_v2_status_send_fix' });
+});
+
+
+app.get('/version-v563', async (_req, res) => {
+  res.json({ ok: true, version: 'V5.6.3-BEST-REFERENCE-HYBRID', name: 'Best Reference Hybrid' });
 });
 
 app.get('/chatgpt-status', async (_req, res) => {
@@ -1273,7 +1279,7 @@ app.post('/flow-test-count', async (req, res) => {
 
 
 app.get('/version-v536', async (_req, res) => {
-  res.json({ ok: true, version: 'V5.3.6-FORCED-FINAL-UNIQUE' });
+  res.json({ ok: true, version: 'V5.6.3-BEST-REFERENCE-HYBRID' });
 });
 
 app.post('/flow-test-model-menu-v536-final', async (req, res) => {
@@ -1289,7 +1295,7 @@ app.post('/flow-test-model-menu-v536-final', async (req, res) => {
     await page.waitForTimeout(1400);
 
     const result: any = {
-      version: 'V5.3.6-FORCED-FINAL-UNIQUE',
+      version: 'V5.6.3-BEST-REFERENCE-HYBRID',
       chipClicked: false,
       imageClicked: false,
       aspectClicked: false,
@@ -1843,7 +1849,7 @@ app.get('/flow-images', async (_req, res) => {
 });
 
 /**
- * V5.6.0 - GET /flow-debug-images
+ * V5.6.3-BEST-REFERENCE-HYBRID - GET /flow-debug-images
  * DEBUG: lista TODAS as imagens da página (sem filtro)
  * Útil quando getFlowGeneratedImages retorna vazio mas há imagens visíveis
  */
@@ -1898,7 +1904,7 @@ app.post('/flow-set-references-by-urls', async (req, res) => {
 });
 
 /**
- * V5.6.0 - POST /flow-set-references-by-position
+ * V5.6.3-BEST-REFERENCE-HYBRID - POST /flow-set-references-by-position
  * AMPLITUDE PELO MÉTODO DOS 3 PONTINHOS (Incluir no comando)
  * Body: { sceneNumbers: number[], perScene: number, approvedVariants?: { [sceneNum]: variant } }
  */
@@ -1915,7 +1921,7 @@ app.post('/flow-set-references-by-position', async (req, res) => {
 });
 
 /**
- * V5.6.0 - POST /flow-add-all-references
+ * V5.6.3-BEST-REFERENCE-HYBRID - POST /flow-add-all-references
  * AMPLITUDE: Adiciona TODAS as imagens restantes do projeto como referência
  * Clica "+" → seleciona cada geração → elas viram referências no comando
  */
@@ -1944,7 +1950,7 @@ app.post('/flow-approve-image', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// V5.6.0 - SISTEMA DE REFERÊNCIAS POR DOWNLOAD + UPLOAD
+// V5.6.3-BEST-REFERENCE-HYBRID - SISTEMA DE REFERÊNCIAS POR DOWNLOAD + UPLOAD
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
@@ -1954,10 +1960,10 @@ app.post('/flow-approve-image', async (req, res) => {
  */
 app.post('/project/create', async (req, res) => {
   try {
-    const { basePath, projectName } = req.body;
-    if (!basePath) throw new Error('basePath é obrigatório');
-    const result = await (bridge as any).createProjectDir(basePath, projectName);
-    res.json({ ok: true, ...result });
+    const { basePath, projectName } = req.body || {};
+    const safeBasePath = basePath || path.resolve(process.cwd(), '..');
+    const result = await (bridge as any).createProjectDir(safeBasePath, projectName);
+    res.json({ ok: true, ...result, version: 'V5.6.3-BEST-REFERENCE-HYBRID' });
   } catch (err: any) {
     res.json({ ok: false, error: String(err?.message || err) });
   }
@@ -1970,10 +1976,11 @@ app.post('/project/create', async (req, res) => {
  */
 app.post('/project/save-image', async (req, res) => {
   try {
-    const { base64Data, fileName, saveDir } = req.body;
-    if (!base64Data || !fileName || !saveDir) throw new Error('base64Data, fileName e saveDir são obrigatórios');
-    const result = await (bridge as any).saveImageToDisk(base64Data, fileName, saveDir);
-    res.json({ ok: true, ...result });
+    const { base64Data, imageUrl, flowUrl, fileName, saveDir } = req.body || {};
+    const data = base64Data || imageUrl || flowUrl;
+    if (!data || !fileName || !saveDir) throw new Error('base64Data/imageUrl/flowUrl, fileName e saveDir são obrigatórios');
+    const result = await (bridge as any).saveImageToDisk(data, fileName, saveDir);
+    res.json({ ok: true, ...result, version: 'V5.6.3-BEST-REFERENCE-HYBRID' });
   } catch (err: any) {
     res.json({ ok: false, error: String(err?.message || err) });
   }
@@ -2035,8 +2042,8 @@ app.post('/flow-set-references', async (req, res) => {
 app.get('/version', async (_req, res) => {
   res.json({ 
     ok: true, 
-    version: 'V5.6.0', 
-    name: 'DarkPlanner V5.6.0 - Amplitude Approval',
+    version: 'V5.6.3-BEST-REFERENCE-HYBRID', 
+    name: 'DarkPlanner V5.6.3-BEST-REFERENCE-HYBRID - Amplitude Approval',
     features: [
       '🚀 Mantém mesmo projeto entre cenas (não volta pra home!)',
       '🛑 Botão Stop para pausar geração',
@@ -2051,6 +2058,6 @@ app.get('/version', async (_req, res) => {
 });
 
 app.listen(3017, () => {
-  console.log('🚀 DarkPlanner V5.6.0 backend em http://localhost:3017');
+  console.log('🚀 DarkPlanner V5.6.3-BEST-REFERENCE-HYBRID backend em http://localhost:3017');
   console.log('✨ Production-ready: amplitude inteligente + stop + imagens em tempo real');
 });

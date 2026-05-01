@@ -1381,7 +1381,8 @@ export class AutomationBridge {
    */
   async createProjectDir(basePath: string, projectName?: string) {
     const name = projectName || `video_${Date.now()}`;
-    const projectDir = path.join(basePath, 'projetos', name);
+    const rootBase = basePath || path.resolve(process.cwd(), '..');
+    const projectDir = path.join(rootBase, 'projetos', name);
     const imgDir = path.join(projectDir, 'imagens');
     const vidDir = path.join(projectDir, 'videos');
     
@@ -1482,12 +1483,33 @@ export class AutomationBridge {
       });
       
       if (!plusClicked) {
-        notes.push('Botão "+" (add_2Criar) não encontrado');
-        return { ok: false, error: 'Botão + não encontrado', notes };
+        notes.push('Botão "+" (add_2Criar) não encontrado; tentando seletores genéricos');
+        const genericPlus = [
+          page.locator('button[aria-label*="Add" i]').first(),
+          page.locator('button[aria-label*="Adicionar" i]').first(),
+          page.locator('button').filter({ hasText: /^\+$/ }).first(),
+          page.locator('[role="button"]').filter({ hasText: /^\+$/ }).first(),
+          page.getByText('+', { exact:true }).first(),
+        ];
+        for (const loc of genericPlus) {
+          try {
+            const count = await loc.count();
+            notes.push(`generic plus count=${count}`);
+            if (!count) continue;
+            await loc.click({ timeout: 2500 });
+            await page.waitForTimeout(1200);
+            if (await page.locator('[role="dialog"], input[type="file"]').count().catch(() => 0)) {
+              notes.push('Botão + genérico clicado');
+              break;
+            }
+          } catch (e:any) {
+            notes.push(`plus genérico falhou: ${String(e?.message || e).slice(0,120)}`);
+          }
+        }
+      } else {
+        notes.push('Botão "+" clicado');
+        await page.waitForTimeout(1500);
       }
-      
-      notes.push('Botão "+" clicado');
-      await page.waitForTimeout(1500);
       
       // 2. Verifica se dialog abriu
       const dialogOpen = await page.evaluate(() => !!document.querySelector('[role="dialog"]'));

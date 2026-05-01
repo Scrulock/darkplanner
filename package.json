@@ -1,11 +1,14 @@
 {
-  "name": "darkplanner-v5-3-6-forced-final-unique",
-  "version": "5.3.6",
+  "name": "darkplanner-v5-6-3-best-reference-hybrid",
+  "version": "5.6.3",
   "private": true,
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
     "install:all": "npm install --prefix backend && npm install --prefix frontend",
-    "start": "npm run dev"
+    "start": "npm run dev",
+    "setup": "npm install && npm run install:all && cd backend && npx playwright install && cd ..",
+    "start:simple": "npm run dev",
+    "kill:ports": "powershell -ExecutionPolicy Bypass -File FECHAR_PORTAS.ps1"
   },
   "dependencies": {
     "concurrently": "^8.2.2"
